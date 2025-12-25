@@ -547,12 +547,10 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    if 'files[]' not in request.files:
-        return jsonify({'error': 'No files selected'}), 400
+    # Support both 'files[]' and 'files' key names
+    files = request.files.getlist('files[]') or request.files.getlist('files')
     
-    files = request.files.getlist('files[]')
-    
-    if len(files) == 0:
+    if not files or len(files) == 0:
         return jsonify({'error': 'No files selected'}), 400
     
     if len(files) > 1000:
