@@ -650,6 +650,9 @@ def upload_file():
     
     # Create Excel file with all data
     df = pd.DataFrame(all_data)
+    
+    # Add extraction date column
+    df.insert(0, 'Extraction Date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     excel_filename = f"invoice_data_{timestamp}.xlsx"
     excel_path = os.path.join(app.config['OUTPUT_FOLDER'], excel_filename)
     
