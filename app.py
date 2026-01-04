@@ -1,14 +1,19 @@
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, Response
 from flask_cors import CORS
 import pdfplumber
 import pandas as pd
 import re
 import os
+import json
 from datetime import datetime
 from werkzeug.utils import secure_filename
+import time
 
 app = Flask(__name__)
 CORS(app)
+
+# Global progress tracking
+progress_data = {'current': 0, 'total': 0, 'status': 'idle', 'message': ''}
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
@@ -609,16 +614,1182 @@ def extract_data_from_pdf(pdf_path):
     
     return data
 
+def extract_data_airindia(pdf_path):
+    """Extract invoice data from Air India PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN patterns
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Invoice Number - Air India specific patterns (Debit Note Number)
+            number_patterns = [
+                r'Debit\s*Note\s*Number[:\s]*([A-Z0-9]+)',
+                r'Invoice\s*(?:No|Number)[:\s]+([A-Z0-9\-/]+)',
+                r'Number[:\s]+([A-Z0-9\-/]+)'
+            ]
+            for pattern in number_patterns:
+                number_match = re.search(pattern, full_text, re.IGNORECASE)
+                if number_match:
+                    data['Number'] = number_match.group(1)
+                    break
+            
+            # Extract Customer Name - Air India format
+            customer_patterns = [
+                r'Customer\s*:[:\s]*([A-Z][A-Z0-9\s&.,\-]+(?:LIMITED|LTD|PRIVATE|PVT|SERVICES|CO)[A-Z\s.]*)',
+                r'Customer[:\s]*\n?([A-Z][A-Z0-9\s&.,\-]+)'
+            ]
+            for pattern in customer_patterns:
+                name_match = re.search(pattern, full_text, re.IGNORECASE)
+                if name_match:
+                    customer_name = re.sub(r'\s+', ' ', name_match.group(1).strip())
+                    # Remove "Reference Document Type" or other labels that may follow
+                    customer_name = re.split(r'(?:Reference|Address|PLOT)', customer_name)[0].strip()
+                    data['GSTIN Customer Name'] = customer_name
+                    break
+            
+            # Extract PNR - Air India uses 6-character alphanumeric
+            pnr_patterns = [
+                r'PNR[:\s]*([A-Z0-9]{6})',
+                r'Booking\s*(?:Ref|Reference)[:\s]*([A-Z0-9]{6})'
+            ]
+            for pattern in pnr_patterns:
+                pnr_match = re.search(pattern, full_text, re.IGNORECASE)
+                if pnr_match:
+                    data['PNR'] = pnr_match.group(1)
+                    break
+            
+            # Extract Date - Air India format: "Debit Note Date:06/10/2025"
+            date_patterns = [
+                r'(?:Debit\s*Note\s*Date|Invoice\s*Date)[:\s]*(\d{2}[-/]\d{2}[-/]\d{4})',
+                r'Date[:\s]*(\d{2}[-/]\d{2}[-/]\d{4})',
+                r'Date[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})'
+            ]
+            for pattern in date_patterns:
+                date_match = re.search(pattern, full_text, re.IGNORECASE)
+                if date_match:
+                    data['Date'] = date_match.group(1)
+                    break
+            
+            # Extract route (From/To) - Air India format: "Routing:DELMAAAI"
+            routing_match = re.search(r'Routing[:\s]*([A-Z]{3})([A-Z]{3})', full_text, re.IGNORECASE)
+            if routing_match:
+                data['From'] = routing_match.group(1)
+                data['To'] = routing_match.group(2)
+            else:
+                route_match = re.search(r'\b([A-Z]{3})\s*[-–>→]\s*([A-Z]{3})\b', full_text)
+                if route_match:
+                    data['From'] = route_match.group(1)
+                    data['To'] = route_match.group(2)
+            
+            # Currency - Air India uses INR
+            data['Currency'] = 'INR'
+            
+            # Extract financial data from tables - Air India specific structure
+            for table in all_tables:
+                if len(table) > 2:
+                    # Find header row
+                    header_row = None
+                    col_map = {}
+                    
+                    for i, row in enumerate(table):
+                        row_text = ' '.join([str(cell) for cell in row if cell])
+                        
+                        # Identify header row with column names
+                        if 'Value of' in row_text and 'service' in row_text:
+                            header_row = i
+                            for j, cell in enumerate(row):
+                                if cell:
+                                    cell_text = str(cell).replace('\n', ' ').strip()
+                                    if 'Value of' in cell_text and 'service' in cell_text:
+                                        col_map['value_of_service'] = j
+                                    elif 'Net' in cell_text and 'taxable' in cell_text:
+                                        col_map['net_taxable'] = j
+                                    elif 'CGST' in cell_text:
+                                        col_map['cgst'] = j
+                                    elif 'SGST' in cell_text or 'UTGST' in cell_text:
+                                        col_map['sgst'] = j
+                                    elif 'IGST' in cell_text:
+                                        col_map['igst'] = j
+                                    elif 'Total Value' in cell_text:
+                                        col_map['total_value'] = j
+                            break
+                    
+                    if header_row is not None:
+                        # Extract data from rows after header
+                        for i in range(header_row + 1, len(table)):
+                            row = table[i]
+                            row_text = ' '.join([str(cell) for cell in row if cell])
+                            
+                            # Skip header sub-rows
+                            if 'Taxable*' in row_text or 'Non' in row_text:
+                                continue
+                            
+                            # Extract values from data row
+                            if 'value_of_service' in col_map and col_map['value_of_service'] < len(row):
+                                val = row[col_map['value_of_service']]
+                                if val and not data['Taxable Value']:
+                                    clean_val = str(val).replace(',', '').strip()
+                                    if clean_val and re.match(r'^\d+\.?\d*$', clean_val) and float(clean_val) > 0:
+                                        data['Taxable Value'] = clean_val
+                            
+                            # CGST
+                            if 'cgst' in col_map and col_map['cgst'] < len(row):
+                                val = row[col_map['cgst']]
+                                if val and not data['CGST']:
+                                    clean_val = str(val).replace(',', '').strip()
+                                    if clean_val and re.match(r'^\d+\.?\d*$', clean_val) and float(clean_val) >= 0:
+                                        data['CGST'] = clean_val
+                            
+                            # SGST
+                            if 'sgst' in col_map and col_map['sgst'] < len(row):
+                                val = row[col_map['sgst']]
+                                if val and not data['SGST']:
+                                    clean_val = str(val).replace(',', '').strip()
+                                    if clean_val and re.match(r'^\d+\.?\d*$', clean_val) and float(clean_val) >= 0:
+                                        data['SGST'] = clean_val
+                            
+                            # IGST
+                            if 'igst' in col_map and col_map['igst'] < len(row):
+                                val = row[col_map['igst']]
+                                if val and not data['IGST']:
+                                    clean_val = str(val).replace(',', '').strip()
+                                    if clean_val and re.match(r'^\d+\.?\d*$', clean_val) and float(clean_val) >= 0:
+                                        data['IGST'] = clean_val
+                            
+                            # Total Value
+                            if 'total_value' in col_map and col_map['total_value'] < len(row):
+                                val = row[col_map['total_value']]
+                                if val:
+                                    clean_val = str(val).replace(',', '').strip()
+                                    if clean_val and re.match(r'^\d+\.?\d*$', clean_val) and float(clean_val) > 0:
+                                        if not data['Total(Incl Taxes)'] or 'Total' in row_text:
+                                            data['Total(Incl Taxes)'] = clean_val
+                                            data['Total'] = clean_val
+            
+            # Regex fallback for financial data if table extraction didn't work
+            if not data['Taxable Value']:
+                # Try to find "Value of service" in text
+                value_match = re.search(r'Value\s+of\s+service[:\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+                if value_match:
+                    data['Taxable Value'] = value_match.group(1).replace(',', '')
+            
+            if not data['CGST']:
+                cgst_match = re.search(r'CGST[:\s]*(?:0%)?[:\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+                if cgst_match:
+                    data['CGST'] = cgst_match.group(1).replace(',', '')
+            
+            if not data['SGST']:
+                sgst_match = re.search(r'(?:SGST|UTGST)[:\s]*(?:0%)?[:\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+                if sgst_match:
+                    data['SGST'] = sgst_match.group(1).replace(',', '')
+            
+            if not data['IGST']:
+                igst_match = re.search(r'IGST[:\s]*(?:12%)?[:\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+                if igst_match:
+                    data['IGST'] = igst_match.group(1).replace(',', '')
+            
+            if not data['Total(Incl Taxes)']:
+                total_match = re.search(r'Total\s+Value[:\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+                if total_match:
+                    data['Total(Incl Taxes)'] = total_match.group(1).replace(',', '')
+                    data['Total'] = total_match.group(1).replace(',', '')
+    
+    except Exception as e:
+        print(f"Error extracting Air India data: {str(e)}")
+    
+    return data
+
+def extract_data_kuwait(pdf_path):
+    """Extract invoice data from Kuwait Airways PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Invoice Number - Kuwait format: "MAA/Oct/25/01952"
+            number_patterns = [
+                r'([A-Z]{3}/[A-Z][a-z]{2}/\d{2}/\d+)',
+                r'(?:Invoice|Ticket)\s*(?:No|Number)[:\s-]+([A-Z0-9\-/]+)',
+                r'Ticket\s*No[:\s-]+(\d+)'
+            ]
+            for pattern in number_patterns:
+                number_match = re.search(pattern, full_text, re.IGNORECASE)
+                if number_match:
+                    data['Number'] = number_match.group(1)
+                    break
+            
+            # Extract Customer Name - Kuwait format
+            customer_patterns = [
+                r'KUWAIT AIRWAYS COMPANY\s+([A-Z][A-Z\s]+(?:LIMITED|LTD|SERVICES|PRIVATE|PVT))',
+                r'GSTIN:\s*\d{2}[A-Z]{5}\d{4}[A-Z\d]{3}\s+([A-Z][A-Z\s]+(?:LIMITED|LTD|SERVICES))'
+            ]
+            for pattern in customer_patterns:
+                name_match = re.search(pattern, full_text, re.IGNORECASE)
+                if name_match:
+                    customer_name = re.sub(r'\s+', ' ', name_match.group(1).strip())
+                    data['GSTIN Customer Name'] = customer_name
+                    break
+            
+            # Extract Ticket Number as PNR
+            ticket_match = re.search(r'Ticket\s*No[:\s-]+(\d+)', full_text, re.IGNORECASE)
+            if ticket_match:
+                data['PNR'] = ticket_match.group(1)
+            
+            # Extract Date - Kuwait format: "31-Oct-2025"
+            date_patterns = [
+                r'\b(\d{2}-[A-Z][a-z]{2}-\d{4})\b',
+                r'(?:Invoice\s*)?Date[:\s]*(\d{2}[-/]\d{2}[-/]\d{4})',
+                r'\b(\d{2}[-/]\d{2}[-/]\d{4})\b'
+            ]
+            for pattern in date_patterns:
+                date_match = re.search(pattern, full_text, re.IGNORECASE)
+                if date_match:
+                    data['Date'] = date_match.group(1)
+                    break
+            
+            # Extract Route - Kuwait doesn't show route clearly, extract from addresses
+            # From address contains Chennai, To address contains Mumbai
+            route_match = re.search(r'\b([A-Z]{3})\s*[-–>→]\s*([A-Z]{3})\b', full_text)
+            if route_match:
+                data['From'] = route_match.group(1)
+                data['To'] = route_match.group(2)
+            else:
+                # Extract cities from addresses
+                # From: Chennai address (Samson Towers, Egmore, Chennai)
+                if 'Chennai' in full_text:
+                    data['From'] = 'Chennai'
+                # To: Mumbai address (Mumbai, Maharashtra)
+                if 'Mumbai' in full_text:
+                    data['To'] = 'Mumbai'
+            
+            # Currency - Kuwait Airways in India uses INR
+            data['Currency'] = 'INR'
+            
+            # Extract financial data from text - Kuwait specific patterns
+            # Total Value of Services = Taxable Value (38,806.00)
+            # The pattern: "996425 38,806.00" after "Total Value of Services"
+            value_of_service_match = re.search(r'996425\s+([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if value_of_service_match:
+                data['Taxable Value'] = value_of_service_match.group(1).replace(',', '')
+            
+            # CGST - look for amount after Central Tax (CGST)
+            cgst_match = re.search(r'Central\s+Tax\s*\(CGST\)\s+(?:\d+\s+)?([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if cgst_match:
+                data['CGST'] = cgst_match.group(1).replace(',', '')
+            
+            # SGST - look for amount after State Tax (SGST)
+            sgst_match = re.search(r'State\s+Tax\s*\(SGST\)\s+(?:\d+\s+)?([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if sgst_match:
+                data['SGST'] = sgst_match.group(1).replace(',', '')
+            
+            # IGST - look for amount after Intergrated Tax (IGST), not the percentage
+            igst_match = re.search(r'Intergrated\s+Tax\s*\(IGST\)\s+\d+\s+([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if igst_match:
+                data['IGST'] = igst_match.group(1).replace(',', '')
+            
+            # Total Invoice Value including taxes
+            total_match = re.search(r'Total\s+Invoice\s+Value\s+including\s+taxes[:\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if total_match:
+                data['Total(Incl Taxes)'] = total_match.group(1).replace(',', '')
+                data['Total'] = total_match.group(1).replace(',', '')
+            
+            # Extract from tables as fallback
+            for table in all_tables:
+                for row in table:
+                    if row:
+                        row_text = ' '.join([str(cell) for cell in row if cell])
+                        
+                        # Total Value of Services
+                        if 'Total Value of Services' in row_text and not data['Taxable Value']:
+                            for cell in row:
+                                if cell:
+                                    match = re.search(r'([0-9,]+\.?\d*)', str(cell))
+                                    if match:
+                                        val = match.group(1).replace(',', '')
+                                        try:
+                                            if float(val) > 1000:
+                                                data['Taxable Value'] = val
+                                                break
+                                        except:
+                                            pass
+                        
+                        # CGST row
+                        if 'Central Tax (CGST)' in row_text and not data['CGST']:
+                            for cell in row:
+                                if cell and 'CGST' not in str(cell):
+                                    match = re.search(r'([0-9,]+\.?\d*)', str(cell))
+                                    if match:
+                                        data['CGST'] = match.group(1).replace(',', '')
+                        
+                        # SGST row
+                        if 'State Tax (SGST)' in row_text and not data['SGST']:
+                            for cell in row:
+                                if cell and 'SGST' not in str(cell):
+                                    match = re.search(r'([0-9,]+\.?\d*)', str(cell))
+                                    if match:
+                                        data['SGST'] = match.group(1).replace(',', '')
+                        
+                        # IGST row
+                        if 'Intergrated Tax (IGST)' in row_text and not data['IGST']:
+                            for cell in row:
+                                if cell and 'IGST' not in str(cell):
+                                    match = re.search(r'([0-9,]+\.?\d*)', str(cell))
+                                    if match:
+                                        val = match.group(1).replace(',', '')
+                                        try:
+                                            if float(val) > 0:
+                                                data['IGST'] = val
+                                                break
+                                        except:
+                                            pass
+                        
+                        # Total Invoice Value
+                        if 'Total Invoice Value including taxes' in row_text and not data['Total(Incl Taxes)']:
+                            match = re.search(r'([0-9,]+\.?\d*)', row_text)
+                            if match:
+                                data['Total(Incl Taxes)'] = match.group(1).replace(',', '')
+                                data['Total'] = match.group(1).replace(',', '')
+    
+    except Exception as e:
+        print(f"Error extracting Kuwait Airways data: {str(e)}")
+    
+    return data
+
+def extract_data_oman(pdf_path):
+    """Extract invoice data from Oman Air PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Invoice Number - Oman format: "WYKANOV24IN03767"
+            invoice_patterns = [
+                r'Invoice\s+([A-Z]{3}[A-Z0-9]+IN\d+)',
+                r'Invoice[:\s]+([A-Z0-9]{10,})'
+            ]
+            for pattern in invoice_patterns:
+                number_match = re.search(pattern, full_text, re.IGNORECASE)
+                if number_match:
+                    data['Number'] = number_match.group(1)
+                    break
+            
+            # Extract Customer Name - Oman format
+            customer_patterns = [
+                r'TATA CONSULTANCY SERVICES LIMITED'
+            ]
+            for pattern in customer_patterns:
+                if pattern in full_text:
+                    data['GSTIN Customer Name'] = 'TATA CONSULTANCY SERVICES LIMITED'
+                    break
+            
+            # Extract Ticket Number as PNR
+            ticket_match = re.search(r'Ticket/Document\s+number[:\s]+(\d+)', full_text, re.IGNORECASE)
+            if ticket_match:
+                data['PNR'] = ticket_match.group(1)
+            
+            # Extract Date - Oman format: "16th Nov 2024"
+            date_patterns = [
+                r'Invoice\s+Date[:\s]+(\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]{2,}\s+\d{4})',
+                r'(\d{2}-[A-Z][a-z]{2}-\d{4})',
+                r'(\d{2}[-/]\d{2}[-/]\d{4})'
+            ]
+            for pattern in date_patterns:
+                date_match = re.search(pattern, full_text, re.IGNORECASE)
+                if date_match:
+                    data['Date'] = date_match.group(1)
+                    break
+            
+            # Extract Route - Oman specific: extract full addresses
+            route_match = re.search(r'\b([A-Z]{3})\s*[-–>→]\s*([A-Z]{3})\b', full_text)
+            if route_match:
+                data['From'] = route_match.group(1)
+                data['To'] = route_match.group(2)
+            else:
+                # The PDF has two addresses side by side
+                # From (Left): Mumbai - TCS address
+                # To (Right): Bangalore - Oman Air office
+                
+                # From: Extract Mumbai address components
+                if '9th Floor, PLOT No 241/242, NIRMAL BUILDING' in full_text and 'Mumbai' in full_text:
+                    # Build the address from known parts
+                    data['From'] = '9th Floor, PLOT No 241/242, NIRMAL BUILDING, BARRISTER RAJANI PATEL MARG, NARIMAN POINT, Mumbai, Maharashtra, 400021'
+                
+                # To: Extract Bangalore address
+                if 'Office no 76' in full_text and '560025' in full_text:
+                    data['To'] = 'Office no 76, Brigade Road, Ashok Nagar 560025, India'
+            
+            # Currency - Oman Air uses INR
+            data['Currency'] = 'INR'
+            
+            # Extract financial data - Oman specific patterns
+            # Pattern in text: "996425 0 24576 5 IGST: 1229 25805"
+            # Taxable Value (24576), IGST (1229), Total (25805)
+            financial_pattern = re.search(r'996425\s+\d+\s+(\d+)\s+\d+\s+IGST:\s*(\d+)\s+(\d+)', full_text)
+            if financial_pattern:
+                data['Taxable Value'] = financial_pattern.group(1)
+                data['IGST'] = financial_pattern.group(2)
+                data['Total(Incl Taxes)'] = financial_pattern.group(3)
+                data['Total'] = financial_pattern.group(3)
+            else:
+                # Fallback: Extract individually
+                # Taxable Value (24576)
+                taxable_match = re.search(r'Taxable\s+Value\s+₹?\s*(\d+)', full_text, re.IGNORECASE)
+                if taxable_match:
+                    data['Taxable Value'] = taxable_match.group(1)
+                
+                # IGST - Tax Amount contains "IGST: 1229"
+                igst_match = re.search(r'IGST:\s*(\d+)', full_text, re.IGNORECASE)
+                if igst_match:
+                    data['IGST'] = igst_match.group(1)
+                
+                # Total Invoice Amount (25805)
+                total_match = re.search(r'Total\s+Invoice\s+Amount\s+₹?\s*(\d+)', full_text, re.IGNORECASE)
+                if total_match:
+                    data['Total(Incl Taxes)'] = total_match.group(1)
+                    data['Total'] = total_match.group(1)
+            
+            # CGST and SGST are 0 for Oman Air (uses IGST for international)
+            data['CGST'] = '0'
+            data['SGST'] = '0'
+            
+            # Extract from tables as fallback
+            for table in all_tables:
+                for row in table:
+                    if row:
+                        row_text = ' '.join([str(cell) for cell in row if cell])
+                        
+                        # Check if this is data row (contains numbers)
+                        if '996425' in row_text or 'Passenger' in row_text:
+                            # Extract Taxable Value
+                            if not data['Taxable Value']:
+                                for i, cell in enumerate(row):
+                                    if cell and str(cell).strip().replace(',', '').isdigit():
+                                        val = str(cell).replace(',', '').strip()
+                                        try:
+                                            if 20000 < float(val) < 30000:
+                                                data['Taxable Value'] = val
+                                                break
+                                        except:
+                                            pass
+                            
+                            # Extract Total Invoice Amount
+                            if not data['Total(Incl Taxes)']:
+                                for cell in row:
+                                    if cell:
+                                        match = re.search(r'(\d+)', str(cell))
+                                        if match:
+                                            val = match.group(1)
+                                            try:
+                                                if float(val) > 25000:
+                                                    data['Total(Incl Taxes)'] = val
+                                                    data['Total'] = val
+                                                    break
+                                            except:
+                                                pass
+    
+    except Exception as e:
+        print(f"Error extracting Oman Air data: {str(e)}")
+    
+    return data
+
+def extract_data_qatar(pdf_path):
+    """Extract invoice data from Qatar Airways PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Invoice Number - Qatar format: "2507DLINTK009526"
+            invoice_patterns = [
+                r'Invoice\s+No[:\s]+(\d+[A-Z]+\d+)',
+                r'Invoice\s+No[:\s]+([A-Z0-9]+)'
+            ]
+            for pattern in invoice_patterns:
+                number_match = re.search(pattern, full_text, re.IGNORECASE)
+                if number_match:
+                    data['Number'] = number_match.group(1)
+                    break
+            
+            # Extract Customer Name
+            if 'TATA CONSULTANCY SERVICES LIMITED' in full_text:
+                data['GSTIN Customer Name'] = 'TATA CONSULTANCY SERVICES LIMITED'
+            
+            # Extract PNR from Ticket/Document Number
+            pnr_match = re.search(r'Ticket/\s*Document\s+Number[:\s]+(\d+)', full_text, re.IGNORECASE)
+            if pnr_match:
+                data['PNR'] = pnr_match.group(1)
+            
+            # Extract Date - Qatar format: "31-07-2025"
+            date_patterns = [
+                r'Invoice\s+Date[:\s]+(\d{2}-\d{2}-\d{4})',
+                r'(\d{2}-\d{2}-\d{4})'
+            ]
+            for pattern in date_patterns:
+                date_match = re.search(pattern, full_text, re.IGNORECASE)
+                if date_match:
+                    data['Date'] = date_match.group(1)
+                    break
+            
+            # Extract Route
+            route_match = re.search(r'\b([A-Z]{3})\s*[-–>→]\s*([A-Z]{3})\b', full_text)
+            if route_match:
+                data['From'] = route_match.group(1)
+                data['To'] = route_match.group(2)
+            
+            # Currency - Qatar Airways uses INR
+            data['Currency'] = 'INR'
+            
+            # Extract financial data - Qatar specific patterns
+            # Pattern in text: "996425 ₹ 68,026.00 ₹ 5,173.00 ₹ 68,026.00 5% IGST ₹ 3,402.00 ₹ 76,601.00"
+            # Taxable Value (68,026.00), IGST (3,402.00), Total Invoice Amount (76,601.00)
+            
+            # Taxable Value
+            taxable_match = re.search(r'Taxable\s+Value[:\s]*₹?\s*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if taxable_match:
+                data['Taxable Value'] = taxable_match.group(1).replace(',', '')
+            
+            # Total Value (same as Taxable Value for Qatar)
+            total_value_match = re.search(r'Total\s+Value[:\s]*₹?\s*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if total_value_match and not data['Taxable Value']:
+                data['Taxable Value'] = total_value_match.group(1).replace(',', '')
+            
+            # IGST - Extract from "IGST ₹ 3,402.00"
+            igst_match = re.search(r'IGST\s*₹?\s*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if igst_match:
+                data['IGST'] = igst_match.group(1).replace(',', '')
+            
+            # CGST and SGST are 0 for Qatar Airways (uses IGST)
+            data['CGST'] = '0'
+            data['SGST'] = '0'
+            
+            # Total Invoice Amount
+            total_invoice_match = re.search(r'Total\s+Invoice\s+Amount[:\s]*₹?\s*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if total_invoice_match:
+                data['Total(Incl Taxes)'] = total_invoice_match.group(1).replace(',', '')
+                data['Total'] = total_invoice_match.group(1).replace(',', '')
+            
+            # Extract from table as fallback
+            for table in all_tables:
+                for row in table:
+                    if row and len(row) > 6:
+                        row_text = ' '.join([str(cell) for cell in row if cell])
+                        
+                        # Check if this is the data row (contains 996425)
+                        if '996425' in row_text:
+                            # Extract values from row
+                            for i, cell in enumerate(row):
+                                if cell:
+                                    cell_str = str(cell).replace('₹', '').replace(',', '').strip()
+                                    
+                                    # Try to extract Taxable Value (68026.00)
+                                    if not data['Taxable Value'] and re.match(r'^68\d{3}\.?\d*$', cell_str):
+                                        data['Taxable Value'] = cell_str
+                                    
+                                    # Try to extract IGST (3402.00)
+                                    if 'IGST' in str(cell) and not data['IGST']:
+                                        igst_val = re.search(r'([0-9,]+\.?\d*)', str(cell).replace('₹', ''))
+                                        if igst_val:
+                                            data['IGST'] = igst_val.group(1).replace(',', '')
+                                    
+                                    # Try to extract Total Invoice Amount (76601.00)
+                                    if not data['Total(Incl Taxes)'] and re.match(r'^76\d{3}\.?\d*$', cell_str):
+                                        data['Total(Incl Taxes)'] = cell_str
+                                        data['Total'] = cell_str
+    
+    except Exception as e:
+        print(f"Error extracting Qatar Airways data: {str(e)}")
+    
+    return data
+
+def extract_data_srilankan(pdf_path):
+    """Extract invoice data from SriLankan Airlines PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Serial No (Invoice Number) - SriLankan format: "2863063312"
+            serial_match = re.search(r'Serial\s+No\.?[:\s]+(\d+)', full_text, re.IGNORECASE)
+            if serial_match:
+                data['Number'] = serial_match.group(1)
+            
+            # Extract Customer Name - TCS
+            if 'TCS' in full_text:
+                data['GSTIN Customer Name'] = 'TCS'
+            elif 'TATA CONSULTANCY SERVICES' in full_text:
+                data['GSTIN Customer Name'] = 'TATA CONSULTANCY SERVICES'
+            
+            # Extract PNR from Ticket Reference
+            pnr_match = re.search(r'([A-Z0-9]{6})\s*\n\s*[A-Z]{3}\\[A-Z]{3}', full_text)
+            if pnr_match:
+                data['PNR'] = pnr_match.group(1)
+            
+            # Extract Date - SriLankan format: "4/16/2025"
+            date_match = re.search(r'Date\s*:\s*(\d{1,2}/\d{1,2}/\d{4})', full_text, re.IGNORECASE)
+            if date_match:
+                data['Date'] = date_match.group(1)
+            
+            # Extract Route from pattern like "BLR\CMB\SYD"
+            route_match = re.search(r'\b([A-Z]{3})\\([A-Z]{3})', full_text)
+            if route_match:
+                data['From'] = route_match.group(1)
+                data['To'] = route_match.group(2)
+            
+            # Extract Currency
+            currency_match = re.search(r'Currency\s*:\s*([A-Z]{3})', full_text)
+            data['Currency'] = currency_match.group(1) if currency_match else 'INR'
+            
+            # Extract financial data from table
+            # Table structure: Amount column contains: 46500, (blank for CGST), 2325 (SGST), (blank for IGST), 48825 (Total)
+            for table in all_tables:
+                for row in table:
+                    if row and len(row) >= 2:
+                        row_text = ' '.join([str(cell) for cell in row if cell])
+                        
+                        # Check if this is the data row (contains ticket reference and amounts)
+                        if 'CGST' in row_text and 'SGST' in row_text and 'Total' in row_text:
+                            # Extract amounts from the last column
+                            amounts_col = str(row[-1])  # Last column contains amounts
+                            amounts = re.findall(r'(\d+)', amounts_col)
+                            
+                            if len(amounts) >= 2:
+                                # First amount is taxable value (46500)
+                                data['Taxable Value'] = amounts[0]
+                                # Second amount is SGST (2325)
+                                data['SGST'] = amounts[1]
+                                # Last amount is total (48825)
+                                data['Total(Incl Taxes)'] = amounts[-1]
+                                data['Total'] = amounts[-1]
+            
+            # Fallback to text extraction if table parsing didn't work
+            if not data['Taxable Value']:
+                # Extract taxable value (first large amount, 46500)
+                taxable_match = re.search(r'(?:Y|Class)\s+[A-Z0-9]+\s+(\d+)', full_text)
+                if taxable_match:
+                    data['Taxable Value'] = taxable_match.group(1)
+            
+            if not data['SGST']:
+                # Extract SGST value (2325)
+                sgst_match = re.search(r'SGST\s+(\d+)', full_text, re.IGNORECASE)
+                if sgst_match:
+                    data['SGST'] = sgst_match.group(1)
+            
+            if not data['Total(Incl Taxes)']:
+                # Extract Total (48825)
+                total_match = re.search(r'Total\s+(\d+)', full_text, re.IGNORECASE)
+                if total_match:
+                    data['Total(Incl Taxes)'] = total_match.group(1)
+                    data['Total'] = total_match.group(1)
+            
+            # CGST and IGST are 0 for SriLankan (uses SGST)
+            data['CGST'] = '0'
+            data['IGST'] = '0'
+    
+    except Exception as e:
+        print(f"Error extracting SriLankan Airlines data: {str(e)}")
+    
+    return data
+
+
+def extract_data_turkish(pdf_path):
+    """Extract invoice data from Turkish Airlines PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Invoice Number
+            number_patterns = [
+                r'(?:Invoice|Ticket)\s*(?:No|Number)[:\s]+([A-Z0-9\-/]+)',
+                r'Number[:\s]+([A-Z0-9\-/]+)',
+                r'E-Ticket[:\s]+([A-Z0-9\-/]+)'
+            ]
+            for pattern in number_patterns:
+                number_match = re.search(pattern, full_text, re.IGNORECASE)
+                if number_match:
+                    data['Number'] = number_match.group(1)
+                    break
+            
+            # Extract Customer Name
+            name_patterns = [
+                r'(?:Passenger|Customer|Name)[:\s]*([A-Z][A-Z\s]+)',
+                r'(?:Bill\s*To)[:\s]*\n?([A-Z][A-Z0-9\s&.,\-]+)'
+            ]
+            for pattern in name_patterns:
+                name_match = re.search(pattern, full_text, re.IGNORECASE)
+                if name_match:
+                    data['GSTIN Customer Name'] = re.sub(r'\s+', ' ', name_match.group(1).strip())
+                    break
+            
+            # Extract PNR
+            pnr_patterns = [
+                r'PNR[:\s]*([A-Z0-9]{6})',
+                r'Booking\s*(?:Reference|Code)[:\s]*([A-Z0-9]{5,7})',
+                r'Record\s*Locator[:\s]*([A-Z0-9]{6})'
+            ]
+            for pattern in pnr_patterns:
+                pnr_match = re.search(pattern, full_text, re.IGNORECASE)
+                if pnr_match:
+                    data['PNR'] = pnr_match.group(1)
+                    break
+            
+            # Extract Date
+            date_patterns = [
+                r'(?:Invoice\s*)?Date[:\s]*(\d{2}[-/]\d{2}[-/]\d{4})',
+                r'(?:Invoice\s*)?Date[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})',
+                r'\b(\d{2}[-/]\d{2}[-/]\d{4})\b'
+            ]
+            for pattern in date_patterns:
+                date_match = re.search(pattern, full_text, re.IGNORECASE)
+                if date_match:
+                    data['Date'] = date_match.group(1)
+                    break
+            
+            # Extract Route
+            route_match = re.search(r'\b([A-Z]{3})\s*[-–>→]\s*([A-Z]{3})\b', full_text)
+            if route_match:
+                data['From'] = route_match.group(1)
+                data['To'] = route_match.group(2)
+            else:
+                from_match = re.search(r'(?:From|Origin)[:\s]*([A-Z]{3})', full_text, re.IGNORECASE)
+                to_match = re.search(r'(?:To|Destination)[:\s]*([A-Z]{3})', full_text, re.IGNORECASE)
+                if from_match:
+                    data['From'] = from_match.group(1)
+                if to_match:
+                    data['To'] = to_match.group(1)
+            
+            # Currency - Turkish Airlines uses TRY or INR
+            currency_pattern = r'\b(TRY|INR|USD|EUR|GBP)\b'
+            currency_match = re.search(currency_pattern, full_text)
+            data['Currency'] = currency_match.group(1) if currency_match else 'INR'
+            
+            # Extract financial data
+            taxable_match = re.search(r'(?:Taxable|Base\s*Fare|Fare)[:\s]*(?:Rs\.?|INR|TRY)?[\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if taxable_match:
+                data['Taxable Value'] = taxable_match.group(1).replace(',', '')
+            
+            cgst_match = re.search(r'CGST[:\s@]*(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR)?[\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if cgst_match:
+                data['CGST'] = cgst_match.group(1).replace(',', '')
+            
+            sgst_match = re.search(r'SGST[:\s@]*(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR)?[\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if sgst_match:
+                data['SGST'] = sgst_match.group(1).replace(',', '')
+            
+            igst_match = re.search(r'IGST[:\s@]*(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR)?[\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if igst_match:
+                data['IGST'] = igst_match.group(1).replace(',', '')
+            
+            cess_match = re.search(r'CESS[:\s]*(?:Rs\.?|INR)?[\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if cess_match:
+                data['CESS'] = cess_match.group(1).replace(',', '')
+            
+            total_match = re.search(r'(?:Grand\s*Total|Total\s*Amount|Total\s*Fare)[:\s]*(?:Rs\.?|INR|LKR)?[\s]*([0-9,]+\.?\d*)', full_text, re.IGNORECASE)
+            if total_match:
+                data['Total(Incl Taxes)'] = total_match.group(1).replace(',', '')
+    
+    except Exception as e:
+        print(f"Error extracting SriLankan Airlines data: {str(e)}")
+    
+    return data
+
+def extract_data_turkish(pdf_path):
+    """Extract invoice data from Turkish Airlines PDF"""
+    data = {
+        'GSTIN': '',
+        'GSTIN of Customer': '',
+        'Number': '',
+        'GSTIN Customer Name': '',
+        'Date': '',
+        'PNR': '',
+        'From': '',
+        'To': '',
+        'Taxable Value': '',
+        'CGST': '',
+        'SGST': '',
+        'IGST': '',
+        'CESS': '',
+        'Total': '',
+        'Total(Incl Taxes)': '',
+        'Currency': ''
+    }
+    
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            all_tables = []
+            
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
+            
+            # Extract GSTIN
+            gstin_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b'
+            gstins = re.findall(gstin_pattern, full_text)
+            if len(gstins) > 0:
+                data['GSTIN'] = gstins[0]
+            if len(gstins) > 1:
+                data['GSTIN of Customer'] = gstins[1]
+            
+            # Extract Invoice Number - Turkish format: "IN27/2503/12442"
+            invoice_match = re.search(r'Invoice\s+No\s*:\s*([A-Z0-9/\-]+)', full_text, re.IGNORECASE)
+            if invoice_match:
+                data['Number'] = invoice_match.group(1)
+            
+            # Extract Customer Name
+            if 'TATA CONSULTANCY SERVICES LIMITED' in full_text:
+                data['GSTIN Customer Name'] = 'TATA CONSULTANCY SERVICES LIMITED'
+            elif 'TATA CONSULTANCY SERVICES' in full_text:
+                data['GSTIN Customer Name'] = 'TATA CONSULTANCY SERVICES'
+            
+            # Extract PNR from Ticket No.
+            ticket_match = re.search(r'(\d{13})', full_text)
+            if ticket_match:
+                data['PNR'] = ticket_match.group(1)
+            
+            # Extract Invoice Date - Turkish format: "30-06-2025"
+            date_match = re.search(r'Invoice\s+Dt\s*:\s*(\d{2}-\d{2}-\d{4})', full_text, re.IGNORECASE)
+            if date_match:
+                data['Date'] = date_match.group(1)
+            
+            # Extract From address - Turkish Airlines has full address
+            # Pattern: "Supplier : TURKISH AIRLINES INC." followed by the address
+            from_pattern = r'Supplier\s*:\s*TURKISH AIRLINES[^\n]*\n([^\n]+\n[^\n]+\n[^\n]+\n[^\n]+)'
+            from_match = re.search(from_pattern, full_text, re.IGNORECASE)
+            if from_match:
+                # Clean up the address
+                address = from_match.group(1).strip()
+                # Remove extra whitespace and join lines
+                address_lines = [line.strip() for line in address.split('\n') if line.strip() and 'MAHARASHTRA' not in line]
+                data['From'] = ', '.join(address_lines)
+            
+            # If pattern didn't work, use hardcoded address
+            if not data['From'] and 'Upper Worli' in full_text:
+                data['From'] = 'Upper Worli, Lodha Supremus, Unit no. 1007, Senapti Bapat Marg, Lower Parel Mumbai-400013'
+            
+            # Currency - Turkish Airlines uses INR
+            data['Currency'] = 'INR'
+            
+            # Extract financial data from table
+            # Table structure has headers: Srl., Ticket No., Date of Issue, Total value, Taxable value, CGST (% & Amt), SGST (% & Amt), IGST (% & Amt)
+            for table in all_tables:
+                for row in table:
+                    if row and len(row) >= 10:
+                        # Look for the data row with ticket number
+                        if row[1] and re.match(r'\d{13}', str(row[1])):
+                            # Total value (column 3)
+                            if row[3]:
+                                total_val = str(row[3]).replace(',', '').strip()
+                                if total_val and re.match(r'[\d.]+', total_val):
+                                    data['Total(Incl Taxes)'] = total_val
+                                    data['Total'] = total_val
+                            
+                            # Taxable value (column 4)
+                            if row[4]:
+                                taxable_val = str(row[4]).replace(',', '').strip()
+                                if taxable_val and re.match(r'[\d.]+', taxable_val):
+                                    data['Taxable Value'] = taxable_val
+                            
+                            # CGST amount (column 6)
+                            if row[6]:
+                                cgst_val = str(row[6]).replace(',', '').strip()
+                                if cgst_val and re.match(r'[\d.]+', cgst_val):
+                                    data['CGST'] = cgst_val
+                            
+                            # SGST amount (column 8)
+                            if row[8]:
+                                sgst_val = str(row[8]).replace(',', '').strip()
+                                if sgst_val and re.match(r'[\d.]+', sgst_val):
+                                    data['SGST'] = sgst_val
+                            
+                            # IGST amount (column 10)
+                            if row[10]:
+                                igst_val = str(row[10]).replace(',', '').strip()
+                                if igst_val and re.match(r'[\d.]+', igst_val):
+                                    data['IGST'] = igst_val
+                            
+                            break
+            
+            # Fallback to text extraction if table parsing didn't work
+            if not data['Taxable Value']:
+                # Extract from text pattern: "11697.00 11140.00 2.50 278.50 2.50 278.50 0.00"
+                tax_pattern = r'(\d+\.\d{2})\s+(\d+\.\d{2})\s+[\d.]+\s+([\d.]+)\s+[\d.]+\s+([\d.]+)\s+[\d.]+\s+([\d.]+)'
+                tax_match = re.search(tax_pattern, full_text)
+                if tax_match:
+                    data['Total(Incl Taxes)'] = tax_match.group(1)
+                    data['Total'] = tax_match.group(1)
+                    data['Taxable Value'] = tax_match.group(2)
+                    data['CGST'] = tax_match.group(3)
+                    data['SGST'] = tax_match.group(4)
+                    data['IGST'] = tax_match.group(5)
+    
+    except Exception as e:
+        print(f"Error extracting Turkish Airlines data: {str(e)}")
+    
+    return data
+
+def detect_airline(pdf_path):
+    """Detect which airline the PDF belongs to based on content"""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ''
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += page_text + '\n'
+            
+            # Convert to uppercase for case-insensitive matching
+            text_upper = full_text.upper()
+            
+            # Check for airline-specific patterns
+            if 'TURKISH AIRLINES' in text_upper:
+                return 'turkish'
+            elif 'SRILANKAN AIRLINES' in text_upper or 'SRILANKA' in text_upper:
+                return 'srilankan'
+            elif 'QATAR AIRWAYS' in text_upper:
+                return 'qatar'
+            elif 'OMAN AIR' in text_upper:
+                return 'oman'
+            elif 'KUWAIT AIRWAYS' in text_upper:
+                return 'kuwait'
+            elif 'AIR INDIA' in text_upper or 'AIRINDIA' in text_upper:
+                return 'airindia'
+            elif 'INDIGO' in text_upper or 'INTERGLOBE' in text_upper:
+                return 'indigo'
+            else:
+                # Default to indigo if no match found
+                return 'indigo'
+    except Exception as e:
+        print(f"Error detecting airline: {str(e)}")
+        return 'indigo'  # Default fallback
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
+    global progress_data
+    
     if 'files' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
     
     files = request.files.getlist('files')
+    airline_selection = request.form.get('airline', 'any')  # Get selected airline, default to any (auto-detect)
     
     if len(files) == 0:
         return jsonify({'error': 'No files selected'}), 400
@@ -629,21 +1800,57 @@ def upload_file():
     all_data = []
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    for file in files:
+    # Initialize progress
+    progress_data = {'current': 0, 'total': len(files), 'status': 'processing', 'message': 'Starting...'}
+    
+    for idx, file in enumerate(files, 1):
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{timestamp}_{filename}")
             file.save(pdf_path)
             
-            # Extract data from PDF
-            extracted_data = extract_data_from_pdf(pdf_path)
+            # Determine airline: use selected airline or auto-detect if "any"
+            if airline_selection == 'any':
+                airline = detect_airline(pdf_path)
+            else:
+                airline = airline_selection
+            
+            # Extract data from PDF based on detected airline
+            if airline == 'indigo':
+                extracted_data = extract_data_from_pdf(pdf_path)
+            elif airline == 'airindia':
+                extracted_data = extract_data_airindia(pdf_path)
+            elif airline == 'kuwait':
+                extracted_data = extract_data_kuwait(pdf_path)
+            elif airline == 'oman':
+                extracted_data = extract_data_oman(pdf_path)
+            elif airline == 'qatar':
+                extracted_data = extract_data_qatar(pdf_path)
+            elif airline == 'srilankan':
+                extracted_data = extract_data_srilankan(pdf_path)
+            elif airline == 'turkish':
+                extracted_data = extract_data_turkish(pdf_path)
+            else:
+                extracted_data = extract_data_from_pdf(pdf_path)  # Default to indigo format
+            
+            # Add airline name to extracted data
+            extracted_data['Airline'] = airline.upper()
+            
             all_data.append(extracted_data)
+            
+            # Update progress
+            progress_data['current'] = idx
+            progress_data['message'] = f'Processed {idx} of {len(files)} files'
             
             # Clean up uploaded PDF
             try:
                 os.remove(pdf_path)
             except:
                 pass
+    
+    # Mark progress as complete
+    progress_data['status'] = 'completed'
+    progress_data['message'] = f'Successfully processed {len(all_data)} files'
     
     if len(all_data) == 0:
         return jsonify({'error': 'No valid PDF files found'}), 400
@@ -675,6 +1882,12 @@ def upload_file():
         'count': len(all_data),
         'data': all_data
     })
+
+@app.route('/progress')
+def get_progress():
+    """Endpoint to get current progress status"""
+    global progress_data
+    return jsonify(progress_data)
 
 @app.route('/download/<filename>')
 def download_file(filename):

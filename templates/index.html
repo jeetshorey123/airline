@@ -136,12 +136,13 @@
 
         .progress-bar {
             width: 100%;
-            height: 6px;
+            height: 30px;
             background: #e0e0e0;
             border-radius: 10px;
             margin-top: 15px;
             overflow: hidden;
             display: none;
+            position: relative;
         }
 
         .progress-bar.show {
@@ -153,13 +154,17 @@
             background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
             width: 0%;
             transition: width 0.3s ease;
-            animation: progress 2s ease-in-out infinite;
         }
 
-        @keyframes progress {
-            0% { width: 0%; }
-            50% { width: 100%; }
-            100% { width: 0%; }
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #333;
+            font-weight: 600;
+            font-size: 14px;
+            z-index: 1;
         }
 
         .message {
@@ -198,6 +203,42 @@
 
         .data-preview.show {
             display: block;
+        }
+
+        .airline-selector {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .airline-selector label {
+            display: block;
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .airline-selector select {
+            width: 100%;
+            padding: 12px 20px;
+            border: 2px solid #667eea;
+            border-radius: 10px;
+            font-size: 16px;
+            background: white;
+            color: #333;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .airline-selector select:hover {
+            border-color: #764ba2;
+            background: #f8f9ff;
+        }
+
+        .airline-selector select:focus {
+            outline: none;
+            border-color: #764ba2;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
 
         .data-preview h3 {
@@ -255,6 +296,20 @@
         <h1>📄 Invoice PDF to Excel</h1>
         <p class="subtitle">Extract airline invoice data from PDF and download as Excel</p>
 
+        <div class="airline-selector">
+            <label for="airlineSelect">Select Airline:</label>
+            <select id="airlineSelect">
+                <option value="any">Any (Auto-detect)</option>
+                <option value="indigo">IndiGo</option>
+                <option value="airindia">Air India</option>
+                <option value="kuwait">Kuwait Airways</option>
+                <option value="oman">Oman Air</option>
+                <option value="qatar">Qatar Airways</option>
+                <option value="srilankan">SriLankan Airlines</option>
+                <option value="turkish">Turkish Airlines</option>
+            </select>
+        </div>
+
         <div class="upload-area" id="uploadArea">
             <div class="upload-icon">📤</div>
             <div class="upload-text">Click to upload or drag and drop</div>
@@ -269,7 +324,8 @@
         <button class="btn" id="uploadBtn" disabled>Upload & Convert</button>
 
         <div class="progress-bar" id="progressBar">
-            <div class="progress-fill"></div>
+            <div class="progress-fill" id="progressFill"></div>
+            <div class="progress-text" id="progressText">0%</div>
         </div>
 
         <div class="spinner" id="spinner"></div>
@@ -289,12 +345,41 @@
         const fileName = document.getElementById('fileName');
         const uploadBtn = document.getElementById('uploadBtn');
         const progressBar = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
         const spinner = document.getElementById('spinner');
         const message = document.getElementById('message');
         const dataPreview = document.getElementById('dataPreview');
         const dataContent = document.getElementById('dataContent');
 
         let selectedFiles = [];
+        let progressInterval = null;
+
+        function updateProgress() {
+            fetch('/progress')
+                .then(response => response.json())
+                .then(progress => {
+                    if (progress.total > 0) {
+                        const percentage = Math.round((progress.current / progress.total) * 100);
+                        progressFill.style.width = percentage + '%';
+                        progressText.textContent = `${percentage}% - ${progress.message}`;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching progress:', error);
+                });
+        }
+
+        function startProgressTracking() {
+            progressInterval = setInterval(updateProgress, 300); // Update every 300ms
+        }
+
+        function stopProgressTracking() {
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+            }
+        }
 
         // Click to upload
         uploadArea.addEventListener('click', () => {
@@ -360,16 +445,23 @@
         uploadBtn.addEventListener('click', async () => {
             if (selectedFiles.length === 0) return;
 
+            const airline = document.getElementById('airlineSelect').value;
             const formData = new FormData();
+            formData.append('airline', airline);
             selectedFiles.forEach(file => {
                 formData.append('files', file);
             });
 
             uploadBtn.disabled = true;
             progressBar.classList.add('show');
+            progressFill.style.width = '0%';
+            progressText.textContent = '0% - Starting...';
             spinner.classList.add('show');
             message.classList.remove('show');
             dataPreview.classList.remove('show');
+
+            // Start progress tracking
+            startProgressTracking();
 
             try {
                 const response = await fetch('/upload', {
@@ -379,6 +471,8 @@
 
                 const result = await response.json();
 
+                // Stop progress tracking
+                stopProgressTracking();
                 progressBar.classList.remove('show');
                 spinner.classList.remove('show');
 
@@ -402,6 +496,7 @@
                     uploadBtn.disabled = false;
                 }
             } catch (error) {
+                stopProgressTracking();
                 progressBar.classList.remove('show');
                 spinner.classList.remove('show');
                 showMessage(`❌ Error: ${error.message}`, 'error');
@@ -441,6 +536,9 @@
             fileInput.value = '';
             fileInfo.classList.remove('show');
             uploadBtn.disabled = true;
+            progressFill.style.width = '0%';
+            progressText.textContent = '0%';
+            stopProgressTracking();
         }
     </script>
 </body>
