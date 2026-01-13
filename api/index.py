@@ -9,7 +9,11 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-app = Flask(__name__, template_folder='../templates')
+# Get the absolute path for templates
+basedir = os.path.abspath(os.path.dirname(__file__))
+template_dir = os.path.join(os.path.dirname(basedir), 'templates')
+
+app = Flask(__name__, template_folder=template_dir)
 CORS(app)
 
 # Global progress tracking
@@ -29,8 +33,10 @@ def ensure_directories():
     try:
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
         os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+        return True
     except Exception as e:
         print(f"Error creating directories: {e}")
+        return False
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -863,5 +869,17 @@ def process_pdfs():
         progress_data['message'] = f'Error creating Excel: {str(e)}'
         return jsonify({'error': str(e)}), 500
 
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error', 'details': str(error)}), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    return jsonify({'error': str(e)}), 500
+
 # Handler for Vercel serverless function
-handler = app
+try:
+    handler = app
+except Exception as e:
+    print(f"Error initializing handler: {e}")
+    raise
