@@ -24,9 +24,13 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
-# Create necessary folders
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+def ensure_directories():
+    """Ensure upload and output directories exist"""
+    try:
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    except Exception as e:
+        print(f"Error creating directories: {e}")
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -740,6 +744,10 @@ def extract_data_akasa(pdf_path):
 def index():
     return render_template('index.html')
 
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok', 'message': 'API is running'})
+
 @app.route('/progress')
 def get_progress():
     return jsonify(progress_data)
@@ -747,6 +755,9 @@ def get_progress():
 @app.route('/process', methods=['POST'])
 def process_pdfs():
     global progress_data
+    
+    # Ensure directories exist
+    ensure_directories()
     
     if 'files[]' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
@@ -852,5 +863,5 @@ def process_pdfs():
         progress_data['message'] = f'Error creating Excel: {str(e)}'
         return jsonify({'error': str(e)}), 500
 
-# This is required for Vercel
-app = app
+# Handler for Vercel serverless function
+handler = app
