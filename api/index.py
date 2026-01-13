@@ -9,7 +9,7 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-# Get the absolute path for templates
+# Get the absolute path for templates (Vercel compatibility)
 basedir = os.path.abspath(os.path.dirname(__file__))
 template_dir = os.path.join(os.path.dirname(basedir), 'templates')
 
@@ -494,15 +494,6 @@ class UnifiedDataExtractor:
     
     def apply_post_extraction_logic(self):
         """Apply airline-specific post-processing and calculations"""
-        # SriLankan Airlines: Fix SGST/IGST mislabeling for international flights
-        if self.airline_name == 'SRILANKAN AIRLINES':
-            # If SGST has value but IGST is empty, and CGST is empty, move SGST to IGST
-            # (International flights should have IGST, not SGST)
-            if self.data['SGST'] and not self.data['IGST'] and not self.data['CGST']:
-                self.data['IGST'] = self.data['SGST']
-                self.data['SGST'] = '0'
-                self.data['CGST'] = '0'
-        
         # Set CGST/SGST to 0 for international flights (IGST only)
         if self.data['IGST'] and not self.data['CGST']:
             self.data['CGST'] = '0'
@@ -871,15 +862,14 @@ def process_pdfs():
 
 @app.errorhandler(500)
 def internal_error(error):
-    return jsonify({'error': 'Internal server error', 'details': str(error)}), 500
+    return jsonify({'error': 'Internal server error', 'message': str(error)}), 500
 
 @app.errorhandler(Exception)
-def handle_exception(e):
-    return jsonify({'error': str(e)}), 500
+def handle_exception(error):
+    return jsonify({'error': 'An error occurred', 'message': str(error)}), 500
 
-# Handler for Vercel serverless function
-try:
-    handler = app
-except Exception as e:
-    print(f"Error initializing handler: {e}")
-    raise
+# This is required for Vercel
+handler = app
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
