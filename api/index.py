@@ -9,7 +9,11 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-app = Flask(__name__, template_folder='../templates')
+# Get absolute paths for Vercel
+basedir = os.path.abspath(os.path.dirname(__file__))
+template_dir = os.path.join(os.path.dirname(basedir), 'templates')
+
+app = Flask(__name__, template_folder=template_dir)
 CORS(app)
 
 # Global progress tracking
@@ -24,9 +28,13 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
-# Create necessary folders
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+def ensure_directories():
+    """Ensure upload and output directories exist"""
+    try:
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    except Exception as e:
+        print(f"Directory creation error: {e}")
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -137,7 +145,6 @@ class UnifiedDataExtractor:
             'CGST': '',
             'SGST': '',
             'IGST': '',
-            'CESS': '',
             'Total(Incl Taxes)': ''
         }
     
@@ -300,8 +307,6 @@ class UnifiedDataExtractor:
                             elif 'sgst' in cell_lower or 'ugst' in cell_lower:
                                 col_map['sgst'] = j
                                 col_map['sgst_has_percent'] = '%' in cell_str
-                            elif 'cess' in cell_lower:
-                                col_map['cess'] = j
                             elif 'total' in cell_lower and ('incl' in cell_lower or 'invoice' in cell_lower or 'ticket' in cell_lower):
                                 col_map['total_incl'] = j
                     break
@@ -362,11 +367,6 @@ class UnifiedDataExtractor:
                         val = self._get_cell_value(data_row, col_map['sgst'] + 1 if col_map['sgst'] + 1 < len(data_row) else col_map['sgst'])
                     if val and (not self.data['SGST'] or is_total_row):
                         self.data['SGST'] = val
-                
-                if 'cess' in col_map:
-                    val = self._get_cell_value(data_row, col_map['cess'] + 1 if col_map['cess'] + 1 < len(data_row) else col_map['cess'])
-                    if val and (not self.data['CESS'] or is_total_row):
-                        self.data['CESS'] = val
                 
                 if 'total_incl' in col_map:
                     val = self._get_cell_value(data_row, col_map['total_incl'])
@@ -739,6 +739,9 @@ def get_progress():
 def process_pdfs():
     global progress_data
     
+    # Ensure directories exist
+    ensure_directories()
+    
     if 'files[]' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
     
@@ -842,6 +845,20 @@ def process_pdfs():
         progress_data['status'] = 'error'
         progress_data['message'] = f'Error creating Excel: {str(e)}'
         return jsonify({'error': str(e)}), 500
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error', 'message': str(error)}), 500
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    return jsonify({'error': 'An error occurred', 'message': str(error)}), 500
+
+# Vercel handler export
+handler = app
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
 # This is required for Vercel
 app = app

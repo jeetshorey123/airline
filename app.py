@@ -137,7 +137,6 @@ class UnifiedDataExtractor:
             'CGST': '',
             'SGST': '',
             'IGST': '',
-            'CESS': '',
             'Total(Incl Taxes)': ''
         }
     
@@ -300,8 +299,7 @@ class UnifiedDataExtractor:
                             elif 'sgst' in cell_lower or 'ugst' in cell_lower:
                                 col_map['sgst'] = j
                                 col_map['sgst_has_percent'] = '%' in cell_str
-                            elif 'cess' in cell_lower:
-                                col_map['cess'] = j
+
                             elif 'total' in cell_lower and ('incl' in cell_lower or 'invoice' in cell_lower):
                                 col_map['total_incl'] = j
                     break
@@ -362,11 +360,6 @@ class UnifiedDataExtractor:
                         val = self._get_cell_value(data_row, col_map['sgst'] + 1 if col_map['sgst'] + 1 < len(data_row) else col_map['sgst'])
                     if val and (not self.data['SGST'] or is_total_row):
                         self.data['SGST'] = val
-                
-                if 'cess' in col_map:
-                    val = self._get_cell_value(data_row, col_map['cess'] + 1 if col_map['cess'] + 1 < len(data_row) else col_map['cess'])
-                    if val and (not self.data['CESS'] or is_total_row):
-                        self.data['CESS'] = val
                 
                 if 'total_incl' in col_map:
                     val = self._get_cell_value(data_row, col_map['total_incl'])
