@@ -9,12 +9,23 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-# Get absolute paths for Vercel
+# Get absolute paths for Vercel - CRITICAL: __file__ gives us the actual module path
 basedir = os.path.abspath(os.path.dirname(__file__))
+# Go up one level from api/ to get project root, then into templates/
 template_dir = os.path.join(os.path.dirname(basedir), 'templates')
+
+# Fallback: if templates not found, try relative path (development mode)
+if not os.path.exists(template_dir):
+    template_dir = os.path.join(basedir, '..', 'templates')
+    template_dir = os.path.abspath(template_dir)
 
 app = Flask(__name__, template_folder=template_dir)
 CORS(app)
+
+# Log critical info for debugging (visible in Vercel logs)
+print(f"[STARTUP] Template dir: {template_dir}")
+print(f"[STARTUP] Template dir exists: {os.path.exists(template_dir)}")
+print(f"[STARTUP] Base dir: {basedir}")
 
 # Global progress tracking
 progress_data = {'current': 0, 'total': 0, 'status': 'idle', 'message': ''}
@@ -726,6 +737,16 @@ def extract_data_akasa(pdf_path):
 # ================================================================================
 # FLASK ROUTES
 # ================================================================================
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint to verify function is running"""
+    return jsonify({
+        'status': 'healthy',
+        'template_dir': template_dir,
+        'template_exists': os.path.exists(template_dir),
+        'basedir': basedir
+    }), 200
 
 @app.route('/')
 def index():
