@@ -9,12 +9,8 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-# Get the absolute path for templates (Vercel compatibility)
-basedir = os.path.abspath(os.path.dirname(__file__))
-template_dir = os.path.join(os.path.dirname(basedir), 'templates')
-
-app = Flask(__name__, template_folder=template_dir)
-CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type"]}})
+app = Flask(__name__, template_folder='../templates')
+CORS(app)
 
 # Global progress tracking
 progress_data = {'current': 0, 'total': 0, 'status': 'idle', 'message': ''}
@@ -28,15 +24,9 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
-def ensure_directories():
-    """Ensure upload and output directories exist"""
-    try:
-        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-        return True
-    except Exception as e:
-        print(f"Error creating directories: {e}")
-        return False
+# Create necessary folders
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -749,10 +739,6 @@ def get_progress():
 def process_pdfs():
     global progress_data
     
-    # Ensure directories exist
-    if not ensure_directories():
-        return jsonify({'error': 'Failed to create directories'}), 500
-    
     if 'files[]' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
     
@@ -857,16 +843,5 @@ def process_pdfs():
         progress_data['message'] = f'Error creating Excel: {str(e)}'
         return jsonify({'error': str(e)}), 500
 
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Internal server error', 'message': str(error)}), 500
-
-@app.errorhandler(Exception)
-def handle_exception(error):
-    return jsonify({'error': 'An error occurred', 'message': str(error)}), 500
-
 # This is required for Vercel
-handler = app
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+app = app

@@ -302,7 +302,7 @@ class UnifiedDataExtractor:
                                 col_map['sgst_has_percent'] = '%' in cell_str
                             elif 'cess' in cell_lower:
                                 col_map['cess'] = j
-                            elif 'total' in cell_lower and ('incl' in cell_lower or 'invoice' in cell_lower or 'ticket' in cell_lower):
+                            elif 'total' in cell_lower and ('incl' in cell_lower or 'invoice' in cell_lower):
                                 col_map['total_incl'] = j
                     break
             
@@ -484,15 +484,6 @@ class UnifiedDataExtractor:
     
     def apply_post_extraction_logic(self):
         """Apply airline-specific post-processing and calculations"""
-        # SriLankan Airlines: Fix SGST/IGST mislabeling for international flights
-        if self.airline_name == 'SRILANKAN AIRLINES':
-            # If SGST has value but IGST is empty, and CGST is empty, move SGST to IGST
-            # (International flights should have IGST, not SGST)
-            if self.data['SGST'] and not self.data['IGST'] and not self.data['CGST']:
-                self.data['IGST'] = self.data['SGST']
-                self.data['SGST'] = '0'
-                self.data['CGST'] = '0'
-        
         # Set CGST/SGST to 0 for international flights (IGST only)
         if self.data['IGST'] and not self.data['CGST']:
             self.data['CGST'] = '0'
