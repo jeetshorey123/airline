@@ -772,6 +772,15 @@ def process_pdfs():
     if not files:
         return jsonify({'error': 'No files selected'}), 400
     
+    # LIMIT: Process max 10 files to avoid timeout (Vercel has 10s limit on free tier)
+    MAX_FILES = 10
+    if len(files) > MAX_FILES:
+        return jsonify({
+            'error': f'Too many files. Please upload maximum {MAX_FILES} PDFs at a time.',
+            'uploaded': len(files),
+            'limit': MAX_FILES
+        }), 400
+    
     # Reset progress
     progress_data = {'current': 0, 'total': len(files), 'status': 'processing', 'message': 'Starting...'}
     
