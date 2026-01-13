@@ -875,11 +875,8 @@ def internal_error(error):
 def handle_exception(error):
     return jsonify({'error': 'An error occurred', 'message': str(error)}), 500
 
-# Vercel handler export
-handler = app
+# Vercel needs this
+app = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-# This is required for Vercel
-app = app
