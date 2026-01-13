@@ -358,7 +358,12 @@
 
         function updateProgress() {
             fetch('/progress')
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(progress => {
                     if (progress.total > 0) {
                         const percentage = Math.round((progress.current / progress.total) * 100);
@@ -450,7 +455,7 @@
             const formData = new FormData();
             formData.append('airline', airline);
             selectedFiles.forEach(file => {
-                formData.append('files', file);
+                formData.append('files[]', file);
             });
 
             uploadBtn.disabled = true;
@@ -465,36 +470,67 @@
             startProgressTracking();
 
             try {
-                const response = await fetch('/upload', {
+                const response = await fetch('/process', {
                     method: 'POST',
                     body: formData
                 });
 
-                const result = await response.json();
-
-                // Stop progress tracking
-                stopProgressTracking();
-                progressBar.classList.remove('show');
-                spinner.classList.remove('show');
-
-                if (result.success) {
-                    showMessage(`✅ Conversion successful! Processed ${result.count} file(s). Downloading...`, 'success');
-                    
-                    // Display extracted data from first PDF as preview
-                    if (result.data && result.data.length > 0) {
-                        displayData(result.data[0], result.count);
+                // Check if response is ok
+                if (!response.ok) {
+                    // Try to get error message from response
+                    let errorMessage = `HTTP error! status: ${response.status}`;
+                    try {
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const errorData = await response.json();
+                            errorMessage = errorData.error || errorMessage;
+                        } else {
+                            const errorText = await response.text();
+                            errorMessage = errorText || errorMessage;
+                        }
+                    } catch (e) {
+                        // If parsing fails, use the status message
                     }
+                    throw new Error(errorMessage);
+                }
+                
+                // Check if we got a file download or JSON
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    const result = await response.json();
                     
-                    // Download the file
-                    window.location.href = `/download/${result.filename}`;
+                    // Stop progress tracking
+                    stopProgressTracking();
+                    progressBar.classList.remove('show');
+                    spinner.classList.remove('show');
+                    
+                    if (result.error) {
+                        showMessage(`❌ Error: ${result.error}`, 'error');
+                        uploadBtn.disabled = false;
+                    }
+                } else {
+                    // File download - get the blob
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `airline_invoices_${new Date().getTime()}.xlsx`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                    
+                    // Stop progress tracking
+                    stopProgressTracking();
+                    progressBar.classList.remove('show');
+                    spinner.classList.remove('show');
+                    
+                    showMessage(`✅ Conversion successful! Downloaded Excel file.`, 'success');
                     
                     // Reset form
                     setTimeout(() => {
                         resetForm();
                     }, 2000);
-                } else {
-                    showMessage(`❌ Error: ${result.error}`, 'error');
-                    uploadBtn.disabled = false;
                 }
             } catch (error) {
                 stopProgressTracking();
