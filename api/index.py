@@ -152,6 +152,7 @@ class UnifiedDataExtractor:
             'PNR': '',
             'From': '',
             'To': '',
+            'Ticket Number': '',
             'Taxable Value': '',
             'CGST': '',
             'SGST': '',
@@ -167,6 +168,25 @@ class UnifiedDataExtractor:
             self.data['GSTIN'] = gstins[0]
         if len(gstins) > 1:
             self.data['GSTIN of Customer'] = gstins[1]
+    
+    def extract_ticket_number(self, patterns=None):
+        """Extract ticket number using provided patterns or default"""
+        if patterns is None:
+            patterns = [r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)']
+        
+        print(f"[DEBUG] extract_ticket_number called with patterns: {patterns}")
+        for pattern in patterns:
+            print(f"[DEBUG] Trying pattern: {pattern}")
+            match = re.search(pattern, self.full_text, re.IGNORECASE)
+            if match:
+                extracted = match.group(1).strip()
+                self.data['Ticket Number'] = extracted
+                print(f"[DEBUG] MATCH FOUND: {extracted}")
+                return
+        
+        # If no match found, leave it empty
+        self.data['Ticket Number'] = ''
+        print(f"[DEBUG] No match found, Ticket Number set to empty string")
     
     def extract_invoice_number(self, patterns=None):
         """Extract invoice number with multiple patterns"""
@@ -593,7 +613,7 @@ def detect_airline(pdf_path):
             return 'kuwait'
         elif 'AIR INDIA EXPRESS' in text_upper:
             return 'airindiaexpress'
-        elif 'AIR INDIA' in text_upper and 'DEBIT NOTE' in text_upper:
+        elif 'AIR INDIA' in text_upper:
             return 'airindia'
         elif 'AKASA' in text_upper or 'AKASA AIR' in text_upper:
             return 'akasa'
@@ -624,7 +644,12 @@ def extract_data_airindia(pdf_path):
         r'Debit\s*Note\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
         r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
     ])
+    extractor.extract_ticket_number([
+        r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'
+    ])
+    print(f"[DEBUG] After extract_ticket_number: Ticket Number = '{extractor.data.get('Ticket Number')}'")
     extractor.extract_all()
+    print(f"[DEBUG] After extract_all: Ticket Number = '{extractor.data.get('Ticket Number')}'")
     return extractor.data
 
 def extract_data_airindiaexpress(pdf_path):
@@ -789,14 +814,18 @@ def process_pdfs():
             
             try:
                 # Auto-detect airline if needed
-                if airline == 'auto':
+                if airline == 'auto' or airline == 'any':
                     detected_airline = detect_airline(filepath)
                 else:
                     detected_airline = airline
                 
+                print(f"[PROCESS] File: {filename}, Detected airline: {detected_airline}")
+                
                 # Extract data based on airline
                 if detected_airline == 'airindia':
+                    print(f"[PROCESS] Using extract_data_airindia for {filename}")
                     extracted_data = extract_data_airindia(filepath)
+                    print(f"[PROCESS] Result Ticket Number: '{extracted_data.get('Ticket Number')}'")
                 elif detected_airline == 'airindiaexpress':
                     extracted_data = extract_data_airindiaexpress(filepath)
                 elif detected_airline == 'kuwait':
@@ -819,7 +848,9 @@ def process_pdfs():
                 # Add filename to extracted data
                 extracted_data['File Name'] = filename
                 
+                print(f"[PROCESS] Before append - Ticket Number: '{extracted_data.get('Ticket Number')}'")
                 all_data.append(extracted_data)
+                print(f"[PROCESS] Data appended to all_data")
                 
             except Exception as e:
                 print(f"Error processing {filename}: {str(e)}")
@@ -839,9 +870,16 @@ def process_pdfs():
     try:
         df = pd.DataFrame(all_data)
         
+        print(f"[EXCEL] DataFrame created, shape: {df.shape}")
+        print(f"[EXCEL] all_data[0] Ticket Number: '{all_data[0].get('Ticket Number')}'")
+        if 'Ticket Number' in df.columns:
+            print(f"[EXCEL] DataFrame Ticket Number: '{df['Ticket Number'].iloc[0]}'")
+        else:
+            print(f"[EXCEL] Ticket Number column NOT in DataFrame!")
+        
         # Reorder columns
         column_order = ['File Name', 'GSTIN', 'GSTIN of Customer', 'Number', 'GSTIN Customer Name', 
-                       'Date', 'PNR', 'Taxable Value', 'CGST', 'SGST', 'IGST', 
+                       'Date', 'PNR', 'From', 'To', 'Ticket Number', 'Taxable Value', 'CGST', 'SGST', 'IGST', 
                        'Total(Incl Taxes)']
         
         for col in column_order:
