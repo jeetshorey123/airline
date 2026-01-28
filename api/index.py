@@ -445,7 +445,10 @@ class UnifiedDataExtractor:
         
         # IGST
         if not self.data['IGST']:
-            patterns = [                r'Intergrated\s+Tax\s+\(IGST\)\s+[\d.]+%?\s+([0-9,]+\.?\d*)',  # Kuwait: Intergrated Tax (IGST) 5 1,718.00                r'IGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
+            patterns = [
+                r'Intergrated\s+Tax\s+\(IGST\)\s+[\d.]+%?\s+([0-9,]+\.?\d*)',  # Kuwait: Intergrated Tax (IGST) 5 1,718.00
+                r'[\d]+%\s*IGST\s*₹\s*([0-9,]+\.?\d*)',  # Qatar: 5% IGST ₹ 3,402.00
+                r'IGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Integrated\s+Tax[:\s]*([0-9,]+\.?\d*)',
             ]
             for pattern in patterns:
@@ -497,6 +500,8 @@ class UnifiedDataExtractor:
         if not self.data['Total(Incl Taxes)']:
             patterns = [
                 r'Total\s+Invoice\s+Value\s+including\s+taxes\s+([0-9,]+\.?\d*)',  # Kuwait: Total Invoice Value including taxes 40,524.00
+                r'IGST\s*₹\s*[0-9,]+\.?\d*\s*₹\s*([0-9,]+\.?\d*)',  # Qatar: IGST ₹ 3,402.00 ₹ 76,601.00 (last value is total)
+                r'5%\s*₹\s*([0-9,]+\.?\d*)',  # Qatar CGST/SGST: 5% ₹ 72,774.00 (total after percentage)
                 r'Total\s+(?:Ticket\s+)?Value[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Total\s+Invoice\s+Value[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Grand\s+Total[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
@@ -701,7 +706,20 @@ def extract_data_qatar(pdf_path):
     content = preprocessor.get_content()
     
     extractor = UnifiedDataExtractor(content, 'QATAR AIRWAYS')
-    extractor.extract_all()
+    extractor.extract_gstins()
+    extractor.extract_invoice_number()
+    extractor.extract_customer_name()
+    extractor.extract_date()
+    extractor.extract_pnr()
+    extractor.extract_route()
+    # Qatar-specific ticket number pattern: "Ticket/ Document Number XXXXXXXXXX"
+    extractor.extract_ticket_number([
+        r'Ticket/?\s*Document\s*Number\s+(\d{10})',
+        r'Ticket\s*Number\s*[:\s]*(\d{10})',
+    ])
+    extractor.extract_financial_data_from_tables()
+    extractor.extract_financial_data_from_text()
+    extractor.apply_post_extraction_logic()
     return extractor.data
 
 def extract_data_srilankan(pdf_path):
