@@ -800,6 +800,10 @@ def extract_data_srilankan(pdf_path):
     extractor.extract_route()
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
+    # Extract total (inc taxes) - appears as number before "Total" text
+    total_match = re.search(r'([0-9,]+)\s*\n\s*Total', content['full_text'], re.IGNORECASE)
+    if total_match:
+        extractor.data['Total (Inc Tax)'] = total_match.group(1).replace(',', '')
     extractor.apply_post_extraction_logic()
     extractor.format_tax_summary()
     return extractor.data
@@ -811,14 +815,23 @@ def extract_data_turkish(pdf_path):
     content = preprocessor.get_content()
     
     extractor = UnifiedDataExtractor(content, 'TURKISH AIRLINES')
-    # Extract ticket number with Turkish-specific pattern
+    extractor.extract_gstins()
+    extractor.extract_invoice_number()
+    # Extract ticket number with Turkish-specific pattern (appears in table)
     extractor.extract_ticket_number([
-        r'Ticket\s*No[:\s]+([0-9]{13})',
-        r'Ticket\s*Number[:\s]*([0-9]{13})',
+        r'\b([0-9]{13})\s+\d{2}/\d{2}/\d{2}',  # Turkish table format: 2351821130682 27/03/25
+        r'1\s+([0-9]{13})\s+',  # Alternative: starts with "1 "
+        r'Ticket\s*No[:\s.]+([0-9]{13})',
         r'E-Ticket\s*No[:\s]+([0-9]{13})',
-        r'([0-9]{13})\s*TKTT',
     ])
-    extractor.extract_all()
+    extractor.extract_customer_name()
+    extractor.extract_date()
+    extractor.extract_pnr()
+    extractor.extract_route()
+    extractor.extract_financial_data_from_tables()
+    extractor.extract_financial_data_from_text()
+    extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_malaysia(pdf_path):
