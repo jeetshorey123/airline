@@ -788,6 +788,12 @@ def extract_data_srilankan(pdf_path):
         r'Serial\s*No\.?[:\s]+([0-9]+)',
         r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9\-/]+)',
     ])
+    # Extract ticket number with Sri Lankan-specific pattern
+    extractor.extract_ticket_number([
+        r'Serial\s*No\.?[:\s]+([0-9]{10})',
+        r'Ticket\s*Number[:\s]*([0-9]{10})',
+        r'E-Ticket[:\s]+([0-9]{10})',
+    ])
     extractor.extract_customer_name()
     extractor.extract_date()
     extractor.extract_pnr()
@@ -805,6 +811,13 @@ def extract_data_turkish(pdf_path):
     content = preprocessor.get_content()
     
     extractor = UnifiedDataExtractor(content, 'TURKISH AIRLINES')
+    # Extract ticket number with Turkish-specific pattern
+    extractor.extract_ticket_number([
+        r'Ticket\s*No[:\s]+([0-9]{13})',
+        r'Ticket\s*Number[:\s]*([0-9]{13})',
+        r'E-Ticket\s*No[:\s]+([0-9]{13})',
+        r'([0-9]{13})\s*TKTT',
+    ])
     extractor.extract_all()
     return extractor.data
 
