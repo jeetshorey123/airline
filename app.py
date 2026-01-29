@@ -734,8 +734,8 @@ def extract_data_oman(pdf_path):
     extractor.extract_gstins()
     extractor.extract_invoice_number()
     extractor.extract_ticket_number([
-        r'Ticket/Document\s+number\s*[:\-]?\s*([0-9]+)',
-        r'Ticket\s+Number[:\s]*([0-9]+)',
+        r'Ticket/Document\s+number\s*[:\s]*([0-9]+)',
+        r'Ticket\s*Number[:\s]*([0-9]+)',
     ])
     extractor.extract_customer_name()
     extractor.extract_date()
@@ -896,33 +896,44 @@ def process_pdfs():
                     detected_airline = airline
                 
                 # Extract data based on airline
-                if detected_airline == 'airindia':
-                    extracted_data = extract_data_airindia(filepath)
-                elif detected_airline == 'airindiaexpress':
-                    extracted_data = extract_data_airindiaexpress(filepath)
-                elif detected_airline == 'kuwait':
-                    extracted_data = extract_data_kuwait(filepath)
-                elif detected_airline == 'oman':
-                    extracted_data = extract_data_oman(filepath)
-                elif detected_airline == 'qatar':
-                    extracted_data = extract_data_qatar(filepath)
-                elif detected_airline == 'srilankan':
-                    extracted_data = extract_data_srilankan(filepath)
-                elif detected_airline == 'turkish':
-                    extracted_data = extract_data_turkish(filepath)
-                elif detected_airline == 'malaysia':
-                    extracted_data = extract_data_malaysia(filepath)
-                elif detected_airline == 'akasa':
-                    extracted_data = extract_data_akasa(filepath)
-                else:  # indigo or default
-                    extracted_data = extract_data_from_pdf(filepath)
+                try:
+                    if detected_airline == 'airindia':
+                        extracted_data = extract_data_airindia(filepath)
+                    elif detected_airline == 'airindiaexpress':
+                        extracted_data = extract_data_airindiaexpress(filepath)
+                    elif detected_airline == 'kuwait':
+                        extracted_data = extract_data_kuwait(filepath)
+                    elif detected_airline == 'oman':
+                        extracted_data = extract_data_oman(filepath)
+                    elif detected_airline == 'qatar':
+                        extracted_data = extract_data_qatar(filepath)
+                    elif detected_airline == 'srilankan':
+                        extracted_data = extract_data_srilankan(filepath)
+                    elif detected_airline == 'turkish':
+                        extracted_data = extract_data_turkish(filepath)
+                    elif detected_airline == 'malaysia':
+                        extracted_data = extract_data_malaysia(filepath)
+                    elif detected_airline == 'akasa':
+                        extracted_data = extract_data_akasa(filepath)
+                    else:  # indigo or default
+                        extracted_data = extract_data_from_pdf(filepath)
                 
-                # Add filename to extracted data
-                extracted_data['File Name'] = filename
-                all_data.append(extracted_data)
+                    # Add filename to extracted data
+                    extracted_data['File Name'] = filename
+                    all_data.append(extracted_data)
+                except Exception as extraction_error:
+                    all_data.append({
+                        'File Name': filename,
+                        'Airline': detected_airline.upper() if 'detected_airline' in locals() else 'UNKNOWN',
+                        'Error': str(extraction_error)
+                    })
                 
             except Exception as e:
-                pass
+                all_data.append({
+                    'File Name': filename,
+                    'Airline': 'ERROR',
+                    'Error': str(e)
+                })
                 all_data.append({
                     'Airline': 'ERROR',
                     'Number': filename,

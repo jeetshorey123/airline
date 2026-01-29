@@ -829,7 +829,20 @@ def extract_data_akasa(pdf_path):
     content = preprocessor.get_content()
     
     extractor = UnifiedDataExtractor(content, 'AKASA AIR')
-    extractor.extract_all()
+    extractor.extract_gstins()
+    extractor.extract_invoice_number()
+    extractor.extract_ticket_number([
+        r'Ticket/Document\s+number\s*[:\s]*([0-9]+)',
+        r'Ticket\s*Number[:\s]*([0-9]+)',
+    ])
+    extractor.extract_customer_name()
+    extractor.extract_date()
+    extractor.extract_pnr()
+    extractor.extract_route()
+    extractor.extract_financial_data_from_tables()
+    extractor.extract_financial_data_from_text()
+    extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 # ================================================================================
