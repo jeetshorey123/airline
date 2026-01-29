@@ -793,12 +793,23 @@ def extract_data_srilankan(pdf_path):
     extractor.extract_date()
     extractor.extract_pnr()
     extractor.extract_route()
-    extractor.extract_financial_data_from_tables()
-    extractor.extract_financial_data_from_text()
+    # Extract taxable value from Sri Lankan format: "Y BZYSW3 46500"
+    taxable_match = re.search(r'[A-Z]\s+[A-Z0-9]{6}\s+([0-9,]+)', content['full_text'])
+    if taxable_match:
+        extractor.data['Taxable Value'] = taxable_match.group(1).replace(',', '')
+    # Extract SGST: "SGST 2325"
+    sgst_match = re.search(r'SGST\s+([0-9,]+)', content['full_text'])
+    if sgst_match:
+        extractor.data['SGST'] = sgst_match.group(1).replace(',', '')
+    else:
+        extractor.data['SGST'] = '0'
+    # Set CGST and IGST to 0 (not present in this format)
+    extractor.data['CGST'] = '0'
+    extractor.data['IGST'] = '0'
     # Extract total (inc taxes) - appears as number before "Total" text
     total_match = re.search(r'([0-9,]+)\s*\n\s*Total', content['full_text'], re.IGNORECASE)
     if total_match:
-        extractor.data['Total (Inc Tax)'] = total_match.group(1).replace(',', '')
+        extractor.data['Total(Incl Taxes)'] = total_match.group(1).replace(',', '')
     extractor.apply_post_extraction_logic()
     extractor.format_tax_summary()
     return extractor.data
