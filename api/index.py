@@ -9,15 +9,20 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-app = Flask(__name__)
+# Get the base directory (parent of api folder)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+app = Flask(__name__, 
+            template_folder=os.path.join(BASE_DIR, 'templates'),
+            static_folder=os.path.join(BASE_DIR, 'static'))
 CORS(app)
 
 # Global progress tracking
 progress_data = {'current': 0, 'total': 0, 'status': 'idle', 'message': ''}
 
-# Configuration
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'outputs'
+# Configuration - use /tmp for serverless environments
+UPLOAD_FOLDER = '/tmp/uploads' if os.path.exists('/tmp') else 'uploads'
+OUTPUT_FOLDER = '/tmp/outputs' if os.path.exists('/tmp') else 'outputs'
 ALLOWED_EXTENSIONS = {'pdf'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
