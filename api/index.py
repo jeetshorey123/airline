@@ -9,46 +9,31 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import time
 
-# Get absolute paths for Vercel - CRITICAL: __file__ gives us the actual module path
-basedir = os.path.abspath(os.path.dirname(__file__))
-# Go up one level from api/ to get project root, then into templates/
-template_dir = os.path.join(os.path.dirname(basedir), 'templates')
-
-# Fallback: if templates not found, try relative path (development mode)
-if not os.path.exists(template_dir):
-    template_dir = os.path.join(basedir, '..', 'templates')
-    template_dir = os.path.abspath(template_dir)
-
-app = Flask(__name__, template_folder=template_dir)
+app = Flask(__name__)
 CORS(app)
-
-# Log critical info for debugging (visible in Vercel logs)
-print(f"[STARTUP] Template dir: {template_dir}")
-print(f"[STARTUP] Template dir exists: {os.path.exists(template_dir)}")
-print(f"[STARTUP] Base dir: {basedir}")
 
 # Global progress tracking
 progress_data = {'current': 0, 'total': 0, 'status': 'idle', 'message': ''}
 
-# Configuration for Vercel (use /tmp directory)
-UPLOAD_FOLDER = '/tmp/uploads'
-OUTPUT_FOLDER = '/tmp/outputs'
+# Configuration
+UPLOAD_FOLDER = 'uploads'
+OUTPUT_FOLDER = 'outputs'
 ALLOWED_EXTENSIONS = {'pdf'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
-def ensure_directories():
-    """Ensure upload and output directories exist"""
-    try:
-        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-    except Exception as e:
-        print(f"Directory creation error: {e}")
+# Create necessary folders
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({'error': 'File too large. Maximum size is 100MB'}), 413
 
 # ================================================================================
 # UNIFIED PDF PREPROCESSING
@@ -62,7 +47,6 @@ class PDFPreprocessor:
         self.full_text = ''
         self.all_tables = []
         self.lines = []
-        self.numeric_values = []
         
     def extract_content(self):
         """Extract all content from PDF in a standardized way"""
@@ -88,42 +72,15 @@ class PDFPreprocessor:
                 # Split into lines for line-by-line analysis
                 self.lines = self.full_text.split('\n')
                 
-                # Extract all numeric values with context
-                self._extract_numeric_values()
-                
-        except Exception as e:
-            print(f"Error in PDF preprocessing: {str(e)}")
-    
-    def _extract_numeric_values(self):
-        """Extract all numeric values from text with their context"""
-        for i, line in enumerate(self.lines):
-            # Find all numbers in the line
-            numbers = re.findall(r'([0-9,]+\.?\d*)', line)
-            for num_str in numbers:
-                try:
-                    clean_num = num_str.replace(',', '')
-                    if re.match(r'^\d+\.?\d*$', clean_num):
-                        self.numeric_values.append({
-                            'value': float(clean_num),
-                            'string': clean_num,
-                            'line_index': i,
-                            'context': line.strip(),
-                            'prev_line': self.lines[i-1].strip() if i > 0 else '',
-                            'next_line': self.lines[i+1].strip() if i < len(self.lines)-1 else ''
-                        })
-                except:
-                    pass
-        
-        # Sort by value for easier range-based extraction
-        self.numeric_values.sort(key=lambda x: x['value'])
+        except:
+            pass
     
     def get_content(self):
         """Return all extracted content"""
         return {
             'full_text': self.full_text,
             'tables': self.all_tables,
-            'lines': self.lines,
-            'numeric_values': self.numeric_values
+            'lines': self.lines
         }
 
 # ================================================================================
@@ -138,7 +95,6 @@ class UnifiedDataExtractor:
         self.full_text = content['full_text']
         self.tables = content['tables']
         self.lines = content['lines']
-        self.numeric_values = content['numeric_values']
         self.airline_name = airline_name
         
         # Initialize data structure
@@ -157,7 +113,8 @@ class UnifiedDataExtractor:
             'CGST': '',
             'SGST': '',
             'IGST': '',
-            'Total(Incl Taxes)': ''
+            'Total(Incl Taxes)': '',
+            'Tax Summary': ''
         }
     
     def extract_gstins(self):
@@ -172,21 +129,20 @@ class UnifiedDataExtractor:
     def extract_ticket_number(self, patterns=None):
         """Extract ticket number using provided patterns or default"""
         if patterns is None:
-            patterns = [r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)']
+            patterns = [
+                r'996425\s+(\d{13})\s+TKTT',  # Malaysia: 996425 2326321387720 TKTT
+                r'Ticket\s*No[:\-]+\s*([0-9]{13})',  # Kuwait: Ticket No:- 2296322226237
+                r'Ticket\s*Number[:\s]*([0-9]{10,13})',  # Generic
+                r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'  # Air India
+            ]
         
-        print(f"[DEBUG] extract_ticket_number called with patterns: {patterns}")
         for pattern in patterns:
-            print(f"[DEBUG] Trying pattern: {pattern}")
             match = re.search(pattern, self.full_text, re.IGNORECASE)
             if match:
-                extracted = match.group(1).strip()
-                self.data['Ticket Number'] = extracted
-                print(f"[DEBUG] MATCH FOUND: {extracted}")
+                self.data['Ticket Number'] = match.group(1).strip()
                 return
         
-        # If no match found, leave it empty
         self.data['Ticket Number'] = ''
-        print(f"[DEBUG] No match found, Ticket Number set to empty string")
     
     def extract_invoice_number(self, patterns=None):
         """Extract invoice number with multiple patterns"""
@@ -446,7 +402,7 @@ class UnifiedDataExtractor:
         # IGST
         if not self.data['IGST']:
             patterns = [
-                r'Intergrated\s+Tax\s+\(IGST\)\s+[\d.]+%?\s+([0-9,]+\.?\d*)',  # Kuwait: Intergrated Tax (IGST) 5 1,718.00
+                r'Intergrated\s+Tax\s+\(IGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: Intergrated Tax (IGST) 5 1,718.00 or 0.00
                 r'[\d]+%\s*IGST\s*₹\s*([0-9,]+\.?\d*)',  # Qatar: 5% IGST ₹ 3,402.00
                 r'IGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Integrated\s+Tax[:\s]*([0-9,]+\.?\d*)',
@@ -465,6 +421,8 @@ class UnifiedDataExtractor:
         # CGST
         if not self.data['CGST']:
             patterns = [
+                r'Central\s+Tax\s+\(CGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: Central Tax (CGST) 2.5 1,221.00
+                r'Central\s+Tax\s+\(CGST\)\s*[\d.]*\s*([0-9,]+\.?\d*)',  # More flexible whitespace
                 r'CGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Central\s+(?:GST|Tax)[:\s]*([0-9,]+\.?\d*)',
             ]
@@ -482,6 +440,8 @@ class UnifiedDataExtractor:
         # SGST
         if not self.data['SGST']:
             patterns = [
+                r'State\s+Tax\s+\(SGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: State Tax (SGST) 2.5 1,221.00
+                r'State\s+Tax\s+\(SGST\)\s*[\d.]*\s*([0-9,]+\.?\d*)',  # More flexible whitespace
                 r'SGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'State\s+(?:GST|Tax)[:\s]*([0-9,]+\.?\d*)',
             ]
@@ -517,6 +477,77 @@ class UnifiedDataExtractor:
                             break
                     except:
                         pass
+    
+    def format_tax_summary(self):
+        """Format tax summary in the requested format: Country(BookingRef): Tax details"""
+        try:
+            # Extract country from airline name
+            country_map = {
+                'MALAYSIA AIRLINES': 'Malaysia',
+                'KUWAIT AIRWAYS': 'Kuwait',
+                'QATAR AIRWAYS': 'Qatar',
+                'OMAN AIR': 'Oman',
+                'TURKISH AIRLINES': 'Turkey',
+                'SRILANKAN AIRLINES': 'SriLanka',
+                'AIR INDIA': 'India',
+                'AIR INDIA EXPRESS': 'India',
+                'INDIGO': 'India',
+                'AKASA AIR': 'India'
+            }
+            
+            country = country_map.get(self.airline_name.upper(), self.airline_name.split()[0])
+            
+            # Extract booking reference from Ticket Number or PNR or last digits of Number
+            booking_ref = ''
+            if self.data.get('Ticket Number'):
+                # Extract digit from position 3 (4th character) of ticket number
+                # Examples: Kuwait(4): 2296322226237 -> pos[3]=6, Malaysia(6): 2326321387720 -> pos[3]=6
+                ticket_num = str(self.data['Ticket Number']).strip()
+                if len(ticket_num) >= 4:
+                    # Try extracting from position 3 (4th character)
+                    booking_ref = ticket_num[3]
+                elif len(ticket_num) >= 1:
+                    # Fallback to last digit
+                    booking_ref = ticket_num[-1]
+            elif self.data.get('PNR'):
+                booking_ref = self.data['PNR'][:2]
+            elif self.data.get('Number'):
+                # Extract digits from invoice number
+                digits = re.findall(r'\d+', self.data['Number'])
+                if digits:
+                    booking_ref = digits[-1][-1] if digits[-1] else ''
+            
+            # Format tax information
+            cgst = self.data.get('CGST', '0')
+            sgst = self.data.get('SGST', '0')
+            igst = self.data.get('IGST', '0')
+            
+            # Convert to float for checking
+            cgst_val = float(cgst.replace(',', '')) if cgst and cgst != '0' else 0
+            sgst_val = float(sgst.replace(',', '')) if sgst and sgst != '0' else 0
+            igst_val = float(igst.replace(',', '')) if igst and igst != '0' else 0
+            
+            tax_parts = []
+            
+            if cgst_val > 0 or sgst_val > 0:
+                # Domestic: CGST and SGST
+                total_cgst_sgst = cgst_val + sgst_val
+                tax_parts.append(f"CGST and SGST is {total_cgst_sgst:,.2f}")
+            
+            if igst_val > 0:
+                # International: IGST
+                tax_parts.append(f"IGST is {igst_val:,.2f}")
+            
+            if tax_parts and booking_ref:
+                self.data['Tax Summary'] = f"{country}({booking_ref}): {', '.join(tax_parts)}"
+            elif tax_parts:
+                self.data['Tax Summary'] = f"{country}: {', '.join(tax_parts)}"
+            else:
+                self.data['Tax Summary'] = ''
+                
+        except Exception as e:
+            print(f"Error formatting tax summary: {str(e)}")
+            self.data['Tax Summary'] = ''
     
     def apply_post_extraction_logic(self):
         """Apply airline-specific post-processing and calculations"""
@@ -582,6 +613,7 @@ class UnifiedDataExtractor:
         """Run all extraction methods"""
         self.extract_gstins()
         self.extract_invoice_number()
+        self.extract_ticket_number()
         self.extract_customer_name()
         self.extract_date()
         self.extract_pnr()
@@ -589,6 +621,7 @@ class UnifiedDataExtractor:
         self.extract_financial_data_from_tables()
         self.extract_financial_data_from_text()
         self.apply_post_extraction_logic()
+        self.format_tax_summary()
         return self.data
 
 # ================================================================================
@@ -603,7 +636,6 @@ def detect_airline(pdf_path):
         content = preprocessor.get_content()
         text_upper = content['full_text'].upper()
         
-        # Check for airline-specific patterns
         if 'MALAYSIAN AIRLINES' in text_upper or 'MALAYSIA AIRLINES' in text_upper:
             return 'malaysia'
         elif 'TURKISH AIRLINES' in text_upper:
@@ -625,7 +657,7 @@ def detect_airline(pdf_path):
         elif 'INDIGO' in text_upper or '6E' in text_upper:
             return 'indigo'
         else:
-            return 'indigo'  # Default to Indigo
+            return 'indigo'
     except:
         return 'indigo'
 
@@ -652,9 +684,7 @@ def extract_data_airindia(pdf_path):
     extractor.extract_ticket_number([
         r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'
     ])
-    print(f"[DEBUG] After extract_ticket_number: Ticket Number = '{extractor.data.get('Ticket Number')}'")
     extractor.extract_all()
-    print(f"[DEBUG] After extract_all: Ticket Number = '{extractor.data.get('Ticket Number')}'")
     return extractor.data
 
 def extract_data_airindiaexpress(pdf_path):
@@ -675,10 +705,14 @@ def extract_data_kuwait(pdf_path):
     
     extractor = UnifiedDataExtractor(content, 'KUWAIT AIRWAYS')
     extractor.extract_gstins()
+    # Extract invoice number (HYD/Nov/25/01255)
     extractor.extract_invoice_number([
-        r'Ticket\s*No[:\-]+\s*([0-9]+)',
         r'([A-Z]{3}/[A-Z][a-z]{2}/\d{2}/\d+)',
         r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9\-/]+)',
+    ])
+    # Extract ticket number separately
+    extractor.extract_ticket_number([
+        r'Ticket\s*No[:\-]+\s*([0-9]+)',
     ])
     extractor.extract_customer_name()
     extractor.extract_date()
@@ -687,6 +721,7 @@ def extract_data_kuwait(pdf_path):
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
     extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_oman(pdf_path):
@@ -696,7 +731,20 @@ def extract_data_oman(pdf_path):
     content = preprocessor.get_content()
     
     extractor = UnifiedDataExtractor(content, 'OMAN AIR')
-    extractor.extract_all()
+    extractor.extract_gstins()
+    extractor.extract_invoice_number()
+    extractor.extract_ticket_number([
+        r'Ticket/Document\s+number\s*[:\-]?\s*([0-9]+)',
+        r'Ticket\s+Number[:\s]*([0-9]+)',
+    ])
+    extractor.extract_customer_name()
+    extractor.extract_date()
+    extractor.extract_pnr()
+    extractor.extract_route()
+    extractor.extract_financial_data_from_tables()
+    extractor.extract_financial_data_from_text()
+    extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_qatar(pdf_path):
@@ -720,6 +768,7 @@ def extract_data_qatar(pdf_path):
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
     extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_srilankan(pdf_path):
@@ -741,6 +790,7 @@ def extract_data_srilankan(pdf_path):
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
     extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_turkish(pdf_path):
@@ -764,6 +814,11 @@ def extract_data_malaysia(pdf_path):
         r'Invoice\s*No\s*[:\s]*([A-Z0-9]+[/-]\d+[/-]\d+)',
         r'([A-Z]{2}\d{2}[/-]\d+[/-]\d+)',
     ])
+    # Extract ticket number from table (13-digit number)
+    extractor.extract_ticket_number([
+        r'996425\s+(\d{13})\s+TKTT',
+        r'Ticket\s+Number.*?(\d{13})',
+    ])
     extractor.extract_all()
     return extractor.data
 
@@ -781,19 +836,13 @@ def extract_data_akasa(pdf_path):
 # FLASK ROUTES
 # ================================================================================
 
-@app.route('/health')
-def health_check():
-    """Health check endpoint to verify function is running"""
-    return jsonify({
-        'status': 'healthy',
-        'template_dir': template_dir,
-        'template_exists': os.path.exists(template_dir),
-        'basedir': basedir
-    }), 200
-
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
 
 @app.route('/progress')
 def get_progress():
@@ -803,9 +852,6 @@ def get_progress():
 def process_pdfs():
     global progress_data
     
-    # Ensure directories exist
-    ensure_directories()
-    
     if 'files[]' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
     
@@ -814,6 +860,18 @@ def process_pdfs():
     
     if not files:
         return jsonify({'error': 'No files selected'}), 400
+    
+    # Check total file size (limit to 100MB total)
+    total_size = sum(len(f.read()) for f in files)
+    for f in files:
+        f.seek(0)  # Reset file pointers
+    
+    if total_size > 100 * 1024 * 1024:  # 100MB
+        return jsonify({'error': 'Total file size exceeds 100MB limit'}), 413
+    
+    # Limit number of files
+    if len(files) > 50:
+        return jsonify({'error': 'Maximum 50 files can be processed at once'}), 413
     
     # Reset progress
     progress_data = {'current': 0, 'total': len(files), 'status': 'processing', 'message': 'Starting...'}
@@ -837,13 +895,9 @@ def process_pdfs():
                 else:
                     detected_airline = airline
                 
-                print(f"[PROCESS] File: {filename}, Detected airline: {detected_airline}")
-                
                 # Extract data based on airline
                 if detected_airline == 'airindia':
-                    print(f"[PROCESS] Using extract_data_airindia for {filename}")
                     extracted_data = extract_data_airindia(filepath)
-                    print(f"[PROCESS] Result Ticket Number: '{extracted_data.get('Ticket Number')}'")
                 elif detected_airline == 'airindiaexpress':
                     extracted_data = extract_data_airindiaexpress(filepath)
                 elif detected_airline == 'kuwait':
@@ -865,13 +919,10 @@ def process_pdfs():
                 
                 # Add filename to extracted data
                 extracted_data['File Name'] = filename
-                
-                print(f"[PROCESS] Before append - Ticket Number: '{extracted_data.get('Ticket Number')}'")
                 all_data.append(extracted_data)
-                print(f"[PROCESS] Data appended to all_data")
                 
             except Exception as e:
-                print(f"Error processing {filename}: {str(e)}")
+                pass
                 all_data.append({
                     'Airline': 'ERROR',
                     'Number': filename,
@@ -888,17 +939,10 @@ def process_pdfs():
     try:
         df = pd.DataFrame(all_data)
         
-        print(f"[EXCEL] DataFrame created, shape: {df.shape}")
-        print(f"[EXCEL] all_data[0] Ticket Number: '{all_data[0].get('Ticket Number')}'")
-        if 'Ticket Number' in df.columns:
-            print(f"[EXCEL] DataFrame Ticket Number: '{df['Ticket Number'].iloc[0]}'")
-        else:
-            print(f"[EXCEL] Ticket Number column NOT in DataFrame!")
-        
         # Reorder columns
         column_order = ['File Name', 'GSTIN', 'GSTIN of Customer', 'Number', 'GSTIN Customer Name', 
                        'Date', 'PNR', 'From', 'To', 'Ticket Number', 'Taxable Value', 'CGST', 'SGST', 'IGST', 
-                       'Total(Incl Taxes)']
+                       'Total(Incl Taxes)', 'Tax Summary']
         
         for col in column_order:
             if col not in df.columns:
@@ -922,17 +966,6 @@ def process_pdfs():
         progress_data['status'] = 'error'
         progress_data['message'] = f'Error creating Excel: {str(e)}'
         return jsonify({'error': str(e)}), 500
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Internal server error', 'message': str(error)}), 500
-
-@app.errorhandler(Exception)
-def handle_exception(error):
-    return jsonify({'error': 'An error occurred', 'message': str(error)}), 500
-
-# Vercel needs this
-app = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
