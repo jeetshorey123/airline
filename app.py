@@ -43,7 +43,6 @@ class PDFPreprocessor:
         self.full_text = ''
         self.all_tables = []
         self.lines = []
-        self.numeric_values = []
         
     def extract_content(self):
         """Extract all content from PDF in a standardized way"""
@@ -69,42 +68,15 @@ class PDFPreprocessor:
                 # Split into lines for line-by-line analysis
                 self.lines = self.full_text.split('\n')
                 
-                # Extract all numeric values with context
-                self._extract_numeric_values()
-                
-        except Exception as e:
-            print(f"Error in PDF preprocessing: {str(e)}")
-    
-    def _extract_numeric_values(self):
-        """Extract all numeric values from text with their context"""
-        for i, line in enumerate(self.lines):
-            # Find all numbers in the line
-            numbers = re.findall(r'([0-9,]+\.?\d*)', line)
-            for num_str in numbers:
-                try:
-                    clean_num = num_str.replace(',', '')
-                    if re.match(r'^\d+\.?\d*$', clean_num):
-                        self.numeric_values.append({
-                            'value': float(clean_num),
-                            'string': clean_num,
-                            'line_index': i,
-                            'context': line.strip(),
-                            'prev_line': self.lines[i-1].strip() if i > 0 else '',
-                            'next_line': self.lines[i+1].strip() if i < len(self.lines)-1 else ''
-                        })
-                except:
-                    pass
-        
-        # Sort by value for easier range-based extraction
-        self.numeric_values.sort(key=lambda x: x['value'])
+        except:
+            pass
     
     def get_content(self):
         """Return all extracted content"""
         return {
             'full_text': self.full_text,
             'tables': self.all_tables,
-            'lines': self.lines,
-            'numeric_values': self.numeric_values
+            'lines': self.lines
         }
 
 # ================================================================================
@@ -119,7 +91,6 @@ class UnifiedDataExtractor:
         self.full_text = content['full_text']
         self.tables = content['tables']
         self.lines = content['lines']
-        self.numeric_values = content['numeric_values']
         self.airline_name = airline_name
         
         # Initialize data structure
@@ -156,19 +127,13 @@ class UnifiedDataExtractor:
         if patterns is None:
             patterns = [r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)']
         
-        print(f"[DEBUG] extract_ticket_number called with patterns: {patterns}")
         for pattern in patterns:
-            print(f"[DEBUG] Trying pattern: {pattern}")
             match = re.search(pattern, self.full_text, re.IGNORECASE)
             if match:
-                extracted = match.group(1).strip()
-                self.data['Ticket Number'] = extracted
-                print(f"[DEBUG] MATCH FOUND: {extracted}")
+                self.data['Ticket Number'] = match.group(1).strip()
                 return
         
-        # If no match found, leave it empty
         self.data['Ticket Number'] = ''
-        print(f"[DEBUG] No match found, Ticket Number set to empty string")
     
     def extract_invoice_number(self, patterns=None):
         """Extract invoice number with multiple patterns"""
@@ -659,45 +624,29 @@ def detect_airline(pdf_path):
         content = preprocessor.get_content()
         text_upper = content['full_text'].upper()
         
-        print(f"[DETECT] PDF first 500 chars: {content['full_text'][:500]}")
-        print(f"[DETECT] Checking for airline keywords...")
-        
-        # Check for airline-specific patterns
         if 'MALAYSIAN AIRLINES' in text_upper or 'MALAYSIA AIRLINES' in text_upper:
-            print(f"[DETECT] FOUND: Malaysia Airlines")
             return 'malaysia'
         elif 'TURKISH AIRLINES' in text_upper:
-            print(f"[DETECT] FOUND: Turkish Airlines")
             return 'turkish'
         elif 'SRILANKAN AIRLINES' in text_upper or 'SRILANKA' in text_upper:
-            print(f"[DETECT] FOUND: SriLankan Airlines")
             return 'srilankan'
         elif 'QATAR AIRWAYS' in text_upper:
-            print(f"[DETECT] FOUND: Qatar Airways")
             return 'qatar'
         elif 'OMAN AIR' in text_upper:
-            print(f"[DETECT] FOUND: Oman Air")
             return 'oman'
         elif 'KUWAIT AIRWAYS' in text_upper:
-            print(f"[DETECT] FOUND: Kuwait Airways")
             return 'kuwait'
         elif 'AIR INDIA EXPRESS' in text_upper:
-            print(f"[DETECT] FOUND: Air India Express")
             return 'airindiaexpress'
         elif 'AIR INDIA' in text_upper:
-            print(f"[DETECT] FOUND: Air India")
             return 'airindia'
         elif 'AKASA' in text_upper or 'AKASA AIR' in text_upper:
-            print(f"[DETECT] FOUND: Akasa Air")
             return 'akasa'
         elif 'INDIGO' in text_upper or '6E' in text_upper:
-            print(f"[DETECT] FOUND: Indigo")
             return 'indigo'
         else:
-            print(f"[DETECT] NOT FOUND: Defaulting to Indigo")
-            return 'indigo'  # Default to Indigo
-    except Exception as e:
-        print(f"[DETECT] ERROR in detection: {str(e)}")
+            return 'indigo'
+    except:
         return 'indigo'
 
 def extract_data_from_pdf(pdf_path):
@@ -711,41 +660,20 @@ def extract_data_from_pdf(pdf_path):
 
 def extract_data_airindia(pdf_path):
     """Extract data from Air India PDF"""
-    try:
-        print(f"[AIRINDIA] Starting extraction for {pdf_path}")
-        preprocessor = PDFPreprocessor(pdf_path)
-        preprocessor.extract_content()
-        content = preprocessor.get_content()
-        
-        print(f"[AIRINDIA] Content extracted, full_text length: {len(content['full_text'])}")
-        
-        extractor = UnifiedDataExtractor(content, 'AIR INDIA')
-        print(f"[AIRINDIA] Extractor created, calling extract_invoice_number")
-        
-        extractor.extract_invoice_number([
-            r'Debit\s*Note\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
-            r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
-        ])
-        print(f"[AIRINDIA] Invoice number: '{extractor.data.get('Number')}'")
-        
-        print(f"[AIRINDIA] Calling extract_ticket_number")
-        extractor.extract_ticket_number([
-            r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'
-        ])
-        print(f"[AIRINDIA] After extract_ticket_number: Ticket Number = '{extractor.data.get('Ticket Number')}'")
-        
-        extractor.extract_all()
-        print(f"[AIRINDIA] After extract_all: Ticket Number = '{extractor.data.get('Ticket Number')}'")
-        
-        print(f"[AIRINDIA] Final data keys: {list(extractor.data.keys())}")
-        print(f"[AIRINDIA] Final Ticket Number: '{extractor.data.get('Ticket Number')}'")
-        
-        return extractor.data
-    except Exception as e:
-        print(f"[AIRINDIA] ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise
+    preprocessor = PDFPreprocessor(pdf_path)
+    preprocessor.extract_content()
+    content = preprocessor.get_content()
+    
+    extractor = UnifiedDataExtractor(content, 'AIR INDIA')
+    extractor.extract_invoice_number([
+        r'Debit\s*Note\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
+        r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
+    ])
+    extractor.extract_ticket_number([
+        r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'
+    ])
+    extractor.extract_all()
+    return extractor.data
 
 def extract_data_airindiaexpress(pdf_path):
     """Extract data from Air India Express PDF"""
@@ -922,23 +850,13 @@ def process_pdfs():
             try:
                 # Auto-detect airline if needed
                 if airline == 'auto' or airline == 'any':
-                    print(f"[PROCESS] Auto-detecting airline for {filename}")
                     detected_airline = detect_airline(filepath)
                 else:
                     detected_airline = airline
                 
-                print(f"[PROCESS] File: {filename}, Detected airline: {detected_airline}")
-                
                 # Extract data based on airline
                 if detected_airline == 'airindia':
-                    print(f"[PROCESS] Using extract_data_airindia for {filename}")
-                    try:
-                        extracted_data = extract_data_airindia(filepath)
-                        print(f"[PROCESS] Result Ticket Number: '{extracted_data.get('Ticket Number')}'")
-                        print(f"[PROCESS] Result keys: {list(extracted_data.keys())}")
-                    except Exception as e2:
-                        print(f"[PROCESS] ERROR in extract_data_airindia: {str(e2)}")
-                        raise
+                    extracted_data = extract_data_airindia(filepath)
                 elif detected_airline == 'airindiaexpress':
                     extracted_data = extract_data_airindiaexpress(filepath)
                 elif detected_airline == 'kuwait':
@@ -960,13 +878,10 @@ def process_pdfs():
                 
                 # Add filename to extracted data
                 extracted_data['File Name'] = filename
-                
-                print(f"[PROCESS] Before append - Ticket Number: '{extracted_data.get('Ticket Number')}'")
                 all_data.append(extracted_data)
-                print(f"[PROCESS] Data appended to all_data")
                 
             except Exception as e:
-                print(f"Error processing {filename}: {str(e)}")
+                pass
                 all_data.append({
                     'Airline': 'ERROR',
                     'Number': filename,
@@ -981,18 +896,7 @@ def process_pdfs():
     
     # Create Excel file
     try:
-        print(f"\n[EXCEL] All data before DataFrame:")
-        for i, data in enumerate(all_data):
-            print(f"  Row {i}: Airline={data.get('Airline')}, Ticket Number='{data.get('Ticket Number')}'")
-        
         df = pd.DataFrame(all_data)
-        
-        print(f"[EXCEL] DataFrame created, shape: {df.shape}")
-        print(f"[EXCEL] all_data[0] Ticket Number: '{all_data[0].get('Ticket Number')}'")
-        if 'Ticket Number' in df.columns:
-            print(f"[EXCEL] DataFrame Ticket Number: '{df['Ticket Number'].iloc[0]}'")
-        else:
-            print(f"[EXCEL] Ticket Number column NOT in DataFrame!")
         
         # Reorder columns
         column_order = ['File Name', 'GSTIN', 'GSTIN of Customer', 'Number', 'GSTIN Customer Name', 
