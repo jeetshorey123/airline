@@ -129,7 +129,12 @@ class UnifiedDataExtractor:
     def extract_ticket_number(self, patterns=None):
         """Extract ticket number using provided patterns or default"""
         if patterns is None:
-            patterns = [r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)']
+            patterns = [
+                r'996425\s+(\d{13})\s+TKTT',  # Malaysia: 996425 2326321387720 TKTT
+                r'Ticket\s*No[:\-]+\s*([0-9]{13})',  # Kuwait: Ticket No:- 2296322226237
+                r'Ticket\s*Number[:\s]*([0-9]{10,13})',  # Generic
+                r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'  # Air India
+            ]
         
         for pattern in patterns:
             match = re.search(pattern, self.full_text, re.IGNORECASE)
@@ -417,6 +422,7 @@ class UnifiedDataExtractor:
         if not self.data['CGST']:
             patterns = [
                 r'Central\s+Tax\s+\(CGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: Central Tax (CGST) 2.5 1,221.00
+                r'Central\s+Tax\s+\(CGST\)\s*[\d.]*\s*([0-9,]+\.?\d*)',  # More flexible whitespace
                 r'CGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Central\s+(?:GST|Tax)[:\s]*([0-9,]+\.?\d*)',
             ]
@@ -435,6 +441,7 @@ class UnifiedDataExtractor:
         if not self.data['SGST']:
             patterns = [
                 r'State\s+Tax\s+\(SGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: State Tax (SGST) 2.5 1,221.00
+                r'State\s+Tax\s+\(SGST\)\s*[\d.]*\s*([0-9,]+\.?\d*)',  # More flexible whitespace
                 r'SGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'State\s+(?:GST|Tax)[:\s]*([0-9,]+\.?\d*)',
             ]
@@ -606,6 +613,7 @@ class UnifiedDataExtractor:
         """Run all extraction methods"""
         self.extract_gstins()
         self.extract_invoice_number()
+        self.extract_ticket_number()
         self.extract_customer_name()
         self.extract_date()
         self.extract_pnr()
