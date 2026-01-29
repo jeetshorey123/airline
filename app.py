@@ -138,7 +138,8 @@ class UnifiedDataExtractor:
             'CGST': '',
             'SGST': '',
             'IGST': '',
-            'Total(Incl Taxes)': ''
+            'Total(Incl Taxes)': '',
+            'Tax Summary': ''
         }
     
     def extract_gstins(self):
@@ -319,8 +320,7 @@ class UnifiedDataExtractor:
                             elif 'sgst' in cell_lower or 'ugst' in cell_lower:
                                 col_map['sgst'] = j
                                 col_map['sgst_has_percent'] = '%' in cell_str
-
-                            elif 'total' in cell_lower and ('incl' in cell_lower or 'invoice' in cell_lower):
+                            elif 'total' in cell_lower and ('incl' in cell_lower or 'invoice' in cell_lower or 'ticket' in cell_lower):
                                 col_map['total_incl'] = j
                     break
             
@@ -428,7 +428,7 @@ class UnifiedDataExtractor:
         # IGST
         if not self.data['IGST']:
             patterns = [
-                r'Intergrated\s+Tax\s+\(IGST\)\s+[\d.]+%?\s+([0-9,]+\.?\d*)',  # Kuwait: Intergrated Tax (IGST) 5 1,718.00
+                r'Intergrated\s+Tax\s+\(IGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: Intergrated Tax (IGST) 5 1,718.00 or 0.00
                 r'[\d]+%\s*IGST\s*₹\s*([0-9,]+\.?\d*)',  # Qatar: 5% IGST ₹ 3,402.00
                 r'IGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Integrated\s+Tax[:\s]*([0-9,]+\.?\d*)',
@@ -447,6 +447,7 @@ class UnifiedDataExtractor:
         # CGST
         if not self.data['CGST']:
             patterns = [
+                r'Central\s+Tax\s+\(CGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: Central Tax (CGST) 2.5 1,221.00
                 r'CGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'Central\s+(?:GST|Tax)[:\s]*([0-9,]+\.?\d*)',
             ]
@@ -464,6 +465,7 @@ class UnifiedDataExtractor:
         # SGST
         if not self.data['SGST']:
             patterns = [
+                r'State\s+Tax\s+\(SGST\)\s+[\d.]+\s+([0-9,]+\.?\d*)',  # Kuwait: State Tax (SGST) 2.5 1,221.00
                 r'SGST[:\s]*(?:@\s*)?(?:[\d.]+%)?[:\s]*(?:Rs\.?|INR|₹)?[\s]*([0-9,]+\.?\d*)',
                 r'State\s+(?:GST|Tax)[:\s]*([0-9,]+\.?\d*)',
             ]
@@ -499,6 +501,77 @@ class UnifiedDataExtractor:
                             break
                     except:
                         pass
+    
+    def format_tax_summary(self):
+        """Format tax summary in the requested format: Country(BookingRef): Tax details"""
+        try:
+            # Extract country from airline name
+            country_map = {
+                'MALAYSIA AIRLINES': 'Malaysia',
+                'KUWAIT AIRWAYS': 'Kuwait',
+                'QATAR AIRWAYS': 'Qatar',
+                'OMAN AIR': 'Oman',
+                'TURKISH AIRLINES': 'Turkey',
+                'SRILANKAN AIRLINES': 'SriLanka',
+                'AIR INDIA': 'India',
+                'AIR INDIA EXPRESS': 'India',
+                'INDIGO': 'India',
+                'AKASA AIR': 'India'
+            }
+            
+            country = country_map.get(self.airline_name.upper(), self.airline_name.split()[0])
+            
+            # Extract booking reference from Ticket Number or PNR or last digits of Number
+            booking_ref = ''
+            if self.data.get('Ticket Number'):
+                # Extract digit from position 3 (4th character) of ticket number
+                # Examples: Kuwait(4): 2296322226237 -> pos[3]=6, Malaysia(6): 2326321387720 -> pos[3]=6
+                ticket_num = str(self.data['Ticket Number']).strip()
+                if len(ticket_num) >= 4:
+                    # Try extracting from position 3 (4th character)
+                    booking_ref = ticket_num[3]
+                elif len(ticket_num) >= 1:
+                    # Fallback to last digit
+                    booking_ref = ticket_num[-1]
+            elif self.data.get('PNR'):
+                booking_ref = self.data['PNR'][:2]
+            elif self.data.get('Number'):
+                # Extract digits from invoice number
+                digits = re.findall(r'\d+', self.data['Number'])
+                if digits:
+                    booking_ref = digits[-1][-1] if digits[-1] else ''
+            
+            # Format tax information
+            cgst = self.data.get('CGST', '0')
+            sgst = self.data.get('SGST', '0')
+            igst = self.data.get('IGST', '0')
+            
+            # Convert to float for checking
+            cgst_val = float(cgst.replace(',', '')) if cgst and cgst != '0' else 0
+            sgst_val = float(sgst.replace(',', '')) if sgst and sgst != '0' else 0
+            igst_val = float(igst.replace(',', '')) if igst and igst != '0' else 0
+            
+            tax_parts = []
+            
+            if cgst_val > 0 or sgst_val > 0:
+                # Domestic: CGST and SGST
+                total_cgst_sgst = cgst_val + sgst_val
+                tax_parts.append(f"CGST and SGST is {total_cgst_sgst:,.2f}")
+            
+            if igst_val > 0:
+                # International: IGST
+                tax_parts.append(f"IGST is {igst_val:,.2f}")
+            
+            if tax_parts and booking_ref:
+                self.data['Tax Summary'] = f"{country}({booking_ref}): {', '.join(tax_parts)}"
+            elif tax_parts:
+                self.data['Tax Summary'] = f"{country}: {', '.join(tax_parts)}"
+            else:
+                self.data['Tax Summary'] = ''
+                
+        except Exception as e:
+            print(f"Error formatting tax summary: {str(e)}")
+            self.data['Tax Summary'] = ''
     
     def apply_post_extraction_logic(self):
         """Apply airline-specific post-processing and calculations"""
@@ -571,6 +644,7 @@ class UnifiedDataExtractor:
         self.extract_financial_data_from_tables()
         self.extract_financial_data_from_text()
         self.apply_post_extraction_logic()
+        self.format_tax_summary()
         return self.data
 
 # ================================================================================
@@ -691,10 +765,14 @@ def extract_data_kuwait(pdf_path):
     
     extractor = UnifiedDataExtractor(content, 'KUWAIT AIRWAYS')
     extractor.extract_gstins()
+    # Extract invoice number (HYD/Nov/25/01255)
     extractor.extract_invoice_number([
-        r'Ticket\s*No[:\-]+\s*([0-9]+)',
         r'([A-Z]{3}/[A-Z][a-z]{2}/\d{2}/\d+)',
         r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9\-/]+)',
+    ])
+    # Extract ticket number separately
+    extractor.extract_ticket_number([
+        r'Ticket\s*No[:\-]+\s*([0-9]+)',
     ])
     extractor.extract_customer_name()
     extractor.extract_date()
@@ -703,6 +781,7 @@ def extract_data_kuwait(pdf_path):
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
     extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_oman(pdf_path):
@@ -736,6 +815,7 @@ def extract_data_qatar(pdf_path):
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
     extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_srilankan(pdf_path):
@@ -757,6 +837,7 @@ def extract_data_srilankan(pdf_path):
     extractor.extract_financial_data_from_tables()
     extractor.extract_financial_data_from_text()
     extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
     return extractor.data
 
 def extract_data_turkish(pdf_path):
@@ -779,6 +860,11 @@ def extract_data_malaysia(pdf_path):
     extractor.extract_invoice_number([
         r'Invoice\s*No\s*[:\s]*([A-Z0-9]+[/-]\d+[/-]\d+)',
         r'([A-Z]{2}\d{2}[/-]\d+[/-]\d+)',
+    ])
+    # Extract ticket number from table (13-digit number)
+    extractor.extract_ticket_number([
+        r'996425\s+(\d{13})\s+TKTT',
+        r'Ticket\s+Number.*?(\d{13})',
     ])
     extractor.extract_all()
     return extractor.data
@@ -911,7 +997,7 @@ def process_pdfs():
         # Reorder columns
         column_order = ['File Name', 'GSTIN', 'GSTIN of Customer', 'Number', 'GSTIN Customer Name', 
                        'Date', 'PNR', 'From', 'To', 'Ticket Number', 'Taxable Value', 'CGST', 'SGST', 'IGST', 
-                       'Total(Incl Taxes)']
+                       'Total(Incl Taxes)', 'Tax Summary']
         
         for col in column_order:
             if col not in df.columns:
