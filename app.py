@@ -22,7 +22,7 @@ ALLOWED_EXTENSIONS = {'pdf'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1GB max file size
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
 # Create necessary folders
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -30,6 +30,10 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({'error': 'File too large. Maximum size is 100MB'}), 413
 
 # ================================================================================
 # UNIFIED PDF PREPROCESSING
@@ -815,6 +819,10 @@ def extract_data_akasa(pdf_path):
 def index():
     return render_template('index.html')
 
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
 @app.route('/progress')
 def get_progress():
     return jsonify(progress_data)
@@ -831,6 +839,18 @@ def process_pdfs():
     
     if not files:
         return jsonify({'error': 'No files selected'}), 400
+    
+    # Check total file size (limit to 100MB total)
+    total_size = sum(len(f.read()) for f in files)
+    for f in files:
+        f.seek(0)  # Reset file pointers
+    
+    if total_size > 100 * 1024 * 1024:  # 100MB
+        return jsonify({'error': 'Total file size exceeds 100MB limit'}), 413
+    
+    # Limit number of files
+    if len(files) > 50:
+        return jsonify({'error': 'Maximum 50 files can be processed at once'}), 413
     
     # Reset progress
     progress_data = {'current': 0, 'total': len(files), 'status': 'processing', 'message': 'Starting...'}
