@@ -988,9 +988,9 @@ def process_pdfs():
         df = pd.DataFrame(all_data)
         
         # Reorder columns
-        column_order = ['File Name', 'GSTIN', 'GSTIN of Customer', 'Number', 'GSTIN Customer Name', 
-                       'Date', 'PNR', 'From', 'To', 'Ticket Number', 'Taxable Value', 'CGST', 'SGST', 'IGST', 
-                       'Total(Incl Taxes)', 'Tax Summary']
+        column_order = ['PNR', 'Ticket Number', 'Number', 'Date', 'GSTIN', 'GSTIN of Customer', 
+                       'GSTIN Customer Name', 'CGST', 'SGST', 'IGST', 'Taxable Value', 
+                       'Total(Incl Taxes)', 'File Name', 'From', 'To', 'Tax Summary']
         
         for col in column_order:
             if col not in df.columns:

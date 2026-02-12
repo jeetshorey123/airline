@@ -155,9 +155,9 @@ def process_pdfs():
     try:
         df = pd.DataFrame(all_data)
         
-        column_order = ['File Name', 'GSTIN', 'GSTIN of Customer', 'Number', 'GSTIN Customer Name', 
-                       'Date', 'PNR', 'Taxable Value', 'CGST', 'SGST', 'IGST', 
-                       'Total(Incl Taxes)']
+        column_order = ['PNR', 'Ticket Number', 'Number', 'Date', 'GSTIN', 'GSTIN of Customer', 
+                       'GSTIN Customer Name', 'CGST', 'SGST', 'IGST', 'Taxable Value', 
+                       'Total(Incl Taxes)', 'File Name']
         
         for col in column_order:
             if col not in df.columns:
