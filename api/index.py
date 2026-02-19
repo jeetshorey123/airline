@@ -686,10 +686,16 @@ def extract_data_airindia(pdf_path):
         r'Debit\s*Note\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
         r'Invoice\s*(?:No|Number)[:\s]*([A-Z0-9]+)',
     ])
-    extractor.extract_ticket_number([
-        r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]+)'
-    ])
     extractor.extract_all()
+    # Extract ticket number AFTER extract_all() to prevent being overwritten
+    extractor.extract_ticket_number([
+        r'Ticket\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'Ticket\s*No\.\s*[:\-]?\s*([0-9]{13})',
+        r'E-Ticket\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'Document\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'\b([0-9]{13})\b'  # Fallback: any 13-digit number
+    ])
     return extractor.data
 
 def extract_data_airindiaexpress(pdf_path):
@@ -700,6 +706,15 @@ def extract_data_airindiaexpress(pdf_path):
     
     extractor = UnifiedDataExtractor(content, 'AIR INDIA EXPRESS')
     extractor.extract_all()
+    # Extract ticket number AFTER extract_all() to prevent being overwritten
+    extractor.extract_ticket_number([
+        r'Ticket\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'Ticket\s*No\.\s*[:\-]?\s*([0-9]{13})',
+        r'E-Ticket\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'Document\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'Reference\s*Document\s*Number\s*[:\-]?\s*([0-9]{13})',
+        r'\b([0-9]{13})\b'  # Fallback: any 13-digit number
+    ])
     return extractor.data
 
 def extract_data_kuwait(pdf_path):
