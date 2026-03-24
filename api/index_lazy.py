@@ -96,7 +96,7 @@ def process_pdfs():
     from app import extract_data_airindia, extract_data_airindiaexpress
     from app import extract_data_kuwait, extract_data_oman, extract_data_qatar
     from app import extract_data_srilankan, extract_data_turkish
-    from app import extract_data_malaysia, extract_data_akasa
+    from app import extract_data_malaysia, extract_data_akasa, extract_data_etihad, extract_data_emirates
     
     all_data = []
     
@@ -110,7 +110,7 @@ def process_pdfs():
             file.save(filepath)
             
             try:
-                if airline == 'auto':
+                if airline == 'auto' or airline == 'any':
                     detected_airline = detect_airline(filepath)
                 else:
                     detected_airline = airline
@@ -131,6 +131,10 @@ def process_pdfs():
                     extracted_data = extract_data_turkish(filepath)
                 elif detected_airline == 'malaysia':
                     extracted_data = extract_data_malaysia(filepath)
+                elif detected_airline == 'etihad':
+                    extracted_data = extract_data_etihad(filepath)
+                elif detected_airline == 'emirates':
+                    extracted_data = extract_data_emirates(filepath)
                 elif detected_airline == 'akasa':
                     extracted_data = extract_data_akasa(filepath)
                 else:

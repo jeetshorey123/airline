@@ -487,6 +487,8 @@ class UnifiedDataExtractor:
                 'KUWAIT AIRWAYS': 'Kuwait',
                 'QATAR AIRWAYS': 'Qatar',
                 'OMAN AIR': 'Oman',
+                'ETIHAD AIRWAYS': 'Etihad',
+                'EMIRATES': 'Emirates',
                 'TURKISH AIRLINES': 'Turkey',
                 'SRILANKAN AIRLINES': 'SriLanka',
                 'AIR INDIA': 'India',
@@ -638,6 +640,10 @@ def detect_airline(pdf_path):
         
         if 'MALAYSIAN AIRLINES' in text_upper or 'MALAYSIA AIRLINES' in text_upper:
             return 'malaysia'
+        elif 'EMIRATES' in text_upper:
+            return 'emirates'
+        elif 'ETIHAD AIRWAYS' in text_upper or 'ETIHAD' in text_upper:
+            return 'etihad'
         elif 'TURKISH AIRLINES' in text_upper:
             return 'turkish'
         elif 'SRILANKAN AIRLINES' in text_upper or 'SRILANKA' in text_upper:
@@ -884,6 +890,105 @@ def extract_data_akasa(pdf_path):
     extractor.extract_all()
     return extractor.data
 
+def extract_data_etihad(pdf_path):
+    """Extract data from Etihad Airways PDF"""
+    preprocessor = PDFPreprocessor(pdf_path)
+    preprocessor.extract_content()
+    content = preprocessor.get_content()
+
+    extractor = UnifiedDataExtractor(content, 'ETIHAD AIRWAYS')
+    text = content['full_text']
+
+    extractor.extract_gstins()
+    extractor.extract_invoice_number([
+        r'\b([A-Z]{2}/[A-Z]{3}\d{2}/\d+)\b',
+        r'\b([A-Z]{2}/[A-Za-z]{3}\d{2}/\d+)\b',
+    ])
+    extractor.extract_date([
+        (r'\b(\d{2}-\d{2}-\d{4})\b', '%d-%m-%Y'),
+    ])
+    extractor.extract_ticket_number([
+        r'Ticket\s*No\s*[-:]\s*([A-Z0-9]{10,20})',
+    ])
+    extractor.extract_customer_name([
+        r'(TATA\s+CONSULTANCY\s+SERVICES\s+LIMITED)',
+        r'(TATA\s+CONSULTANCY\s+SERVICES)\s*\n\s*(LIMITED)'
+    ])
+
+    # Etihad-specific financial extraction
+    taxable_match = re.search(
+        r'Passenger\s+Transportation\s+Service\s+\d+\s+([0-9,]+\.?\d*)',
+        text,
+        re.IGNORECASE
+    )
+    if taxable_match:
+        extractor.data['Taxable Value'] = taxable_match.group(1)
+
+    cgst_match = re.search(r'Central\s+Tax\s*\(CGST\)\s*[\d.]+%\s*([0-9,]+\.?\d*)', text, re.IGNORECASE)
+    sgst_match = re.search(r'State\s+Tax\s*\(SGST\)\s*[\d.]+%\s*([0-9,]+\.?\d*)', text, re.IGNORECASE)
+    igst_match = re.search(r'Integrated\s+Tax\s*\(IGST\)\s*[\d.]+%\s*([0-9,]+\.?\d*)', text, re.IGNORECASE)
+    total_match = re.search(r'Total\s+Invoice\s+Value\s+including\s+taxes\s+([0-9,]+\.?\d*)', text, re.IGNORECASE)
+
+    if cgst_match:
+        extractor.data['CGST'] = cgst_match.group(1)
+    if sgst_match:
+        extractor.data['SGST'] = sgst_match.group(1)
+    if igst_match:
+        extractor.data['IGST'] = igst_match.group(1)
+    if total_match:
+        extractor.data['Total(Incl Taxes)'] = total_match.group(1)
+
+    # Ensure requested customer name format
+    if extractor.data.get('GSTIN Customer Name'):
+        extractor.data['GSTIN Customer Name'] = re.sub(r'\s+', ' ', extractor.data['GSTIN Customer Name']).strip()
+
+    extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
+    return extractor.data
+
+def extract_data_emirates(pdf_path):
+    """Extract data from Emirates PDF"""
+    preprocessor = PDFPreprocessor(pdf_path)
+    preprocessor.extract_content()
+    content = preprocessor.get_content()
+
+    extractor = UnifiedDataExtractor(content, 'EMIRATES')
+    text = content['full_text']
+
+    extractor.extract_gstins()
+    extractor.extract_invoice_number([
+        r'Invoice\s*Number\s*[:\-]\s*([A-Z0-9\-/]+)',
+    ])
+    extractor.extract_ticket_number([
+        r'Ticket/?Document\s*number\s*[:\-]\s*([A-Z0-9\-]+)',
+    ])
+    extractor.extract_date([
+        (r'Invoice\s*Date\s*[:\-]\s*(\d{2}-\d{2}-\d{4})', '%d-%m-%Y'),
+    ])
+    extractor.extract_customer_name([
+        r'(TATA\s+CONSULTANCY\s+SERVICES\s+LIMITED)',
+    ])
+
+    row_match = re.search(
+        r'Tickets\s+\d+\s+([0-9,]+\.?\d*)\s+([0-9,]+\.?\d*)\s+[0-9.]+\s+(?:IGST:\s*)?([0-9,]+\.?\d*)\s+([0-9,]+\.?\d*)',
+        text,
+        re.IGNORECASE
+    )
+    if row_match:
+        # As requested, use Total Value as Taxable Value for Emirates format
+        extractor.data['Taxable Value'] = row_match.group(1)
+        extractor.data['Total(Incl Taxes)'] = row_match.group(4)
+        if not extractor.data['IGST']:
+            extractor.data['IGST'] = row_match.group(3)
+
+    igst_match = re.search(r'IGST\s*[:\-]\s*([0-9,]+\.?\d*)', text, re.IGNORECASE)
+    if igst_match:
+        extractor.data['IGST'] = igst_match.group(1)
+
+    extractor.apply_post_extraction_logic()
+    extractor.format_tax_summary()
+    return extractor.data
+
 # ================================================================================
 # FLASK ROUTES
 # ================================================================================
@@ -967,6 +1072,10 @@ def process_pdfs():
                         extracted_data = extract_data_malaysia(filepath)
                     elif detected_airline == 'akasa':
                         extracted_data = extract_data_akasa(filepath)
+                    elif detected_airline == 'etihad':
+                        extracted_data = extract_data_etihad(filepath)
+                    elif detected_airline == 'emirates':
+                        extracted_data = extract_data_emirates(filepath)
                     else:  # indigo or default
                         extracted_data = extract_data_from_pdf(filepath)
                 
